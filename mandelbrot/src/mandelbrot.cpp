@@ -40,6 +40,8 @@ bool symmetry_enabled() {
 #endif
 }
 
+Paradigm kernel_paradigm() { return Paradigm::Serial; }
+
 MandelbrotImage compute_mandelbrot(const Viewport& view, int width, int height,
                                    int max_iter) {
     MandelbrotImage img;
