@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
@@ -23,6 +24,13 @@ struct Options {
     std::string pgm_path;
     std::string raw_path;
     std::string row_stats_path;
+    // Result-row metadata. The kernel reports the paradigm; the job script
+    // supplies the degree of parallelism and topology it actually requested,
+    // since the shared driver has no paradigm headers to query them itself.
+    std::string csv_path;
+    std::string schedule = "-";
+    int parallelism = 1;  // threads / ranks; 1 for serial
+    int nodes = 1;
 };
 
 struct TimingSummary {
@@ -37,6 +45,8 @@ MandelbrotImage run_timed_repetitions(const Options& opts, TimingSummary& timing
 TimingSummary summarise(std::vector<double> samples);
 double elapsed_seconds(std::chrono::steady_clock::time_point start);
 void print_metrics(const MandelbrotImage& img, const TimingSummary& timing);
+RunRecord build_run_record(const MandelbrotImage& img, const TimingSummary& timing,
+                           const Options& opts);
 void print_build_configuration();
 bool write_requested_outputs(const MandelbrotImage& img, const Options& opts);
 bool write_if_requested(bool (*writer)(const MandelbrotImage&, const std::string&),
@@ -60,6 +70,13 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (!opts.csv_path.empty()) {
+        const RunRecord record = build_run_record(img, timing, opts);
+        if (!write_run_csv(record, opts.csv_path)) {
+            std::cerr << "error: cannot write " << opts.csv_path << "\n";
+        }
+    }
+
     return write_requested_outputs(img, opts) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
@@ -73,10 +90,21 @@ Options parse_arguments(int argc, char** argv) {
             opts.width = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--height") == 0 && has_value) {
             opts.height = std::atoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "--max-iter") == 0 && has_value) {
+        } else if ((std::strcmp(argv[i], "--max-iter") == 0 ||
+                    std::strcmp(argv[i], "--max_iter") == 0) && has_value) {
             opts.max_iter = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--resolution") == 0 && has_value) {
+            std::sscanf(argv[++i], "%dx%d", &opts.width, &opts.height);
         } else if (std::strcmp(argv[i], "--repeat") == 0 && has_value) {
             opts.repetitions = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--csv") == 0 && has_value) {
+            opts.csv_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--schedule") == 0 && has_value) {
+            opts.schedule = argv[++i];
+        } else if (std::strcmp(argv[i], "--p") == 0 && has_value) {
+            opts.parallelism = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--nodes") == 0 && has_value) {
+            opts.nodes = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--ppm") == 0 && has_value) {
             opts.ppm_path = argv[++i];
         } else if (std::strcmp(argv[i], "--pgm") == 0 && has_value) {
@@ -95,8 +123,9 @@ Options parse_arguments(int argc, char** argv) {
 
 void print_usage(const char* program) {
     std::cerr << "usage: " << program
-              << " [--width N] [--height N] [--max-iter N] [--repeat N]"
-                 " [--ppm FILE] [--pgm FILE] [--raw FILE]"
+              << " [--width N] [--height N] [--resolution WxH] [--max-iter N]"
+                 " [--repeat N] [--p N] [--nodes N] [--schedule NAME]"
+                 " [--csv FILE] [--ppm FILE] [--pgm FILE] [--raw FILE]"
                  " [--row-stats FILE]\n";
 }
 
@@ -174,6 +203,53 @@ void print_metrics(const MandelbrotImage& img, const TimingSummary& timing) {
     std::cout << std::setprecision(4);
     std::cout << "row_cov        " << lb.coefficient_of_variation << "\n";
     std::cout << "row_imbalance  " << lb.imbalance_ratio << "\n";
+}
+
+// Assemble the canonical result row from a single run. Only intra-run metrics
+// are filled; the relational columns stay empty (the binary never sees T(1)).
+// Paradigm-specific fields are gated on the kernel's own paradigm, so a serial
+// or OpenMP build leaves the CUDA/MPI columns blank.
+RunRecord build_run_record(const MandelbrotImage& img, const TimingSummary& timing,
+                           const Options& opts) {
+    const RowWorkProfile profile = build_row_work_profile(img);
+    const LoadBalanceStats lb = compute_load_balance(profile);
+    const Paradigm paradigm = kernel_paradigm();
+
+    RunRecord r;
+    r.paradigm = paradigm;
+    r.schedule = opts.schedule;
+    r.p = opts.parallelism;
+    r.nodes = opts.nodes;
+    r.width = img.width;
+    r.height = img.height;
+    r.max_iter = img.max_iter;
+    r.pruning = pruning_enabled();
+    r.symmetry = symmetry_enabled();
+
+    r.t_min = timing.min;
+    r.t_median = timing.median;
+    r.t_mean = timing.mean;
+
+    r.total_work = profile.total_iterations;
+    r.lambda_row = lb.imbalance_ratio;
+    r.cov = lb.coefficient_of_variation;
+    r.gflops = throughput_gflops(profile.total_iterations, timing.min);
+
+    // lambda_block predicts the imbalance of a contiguous P-way block split;
+    // it is only meaningful for a genuine decomposition (P >= 2).
+    if (opts.parallelism >= 2) {
+        r.lambda_block = lambda_block(profile, opts.parallelism);
+    }
+
+    // Warp divergence is a GPU concept: compute the matrix proxy only for CUDA.
+    if (paradigm == Paradigm::CUDA) {
+        r.warp_divergence = warp_divergence_proxy(img);
+    }
+    // occupancy / transfer_time (CUDA) and comm_fraction (MPI) are measured by
+    // those paradigms' thin driver layers and set on the record there.
+
+    r.checksum = checksum(img);
+    return r;
 }
 
 bool write_requested_outputs(const MandelbrotImage& img, const Options& opts) {
