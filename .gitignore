@@ -1,0 +1,40 @@
+# --- Generated data and outputs ---------------------------------------------
+# Keep the folders (via .gitkeep) but ignore their contents.
+mandelbrot/data/*
+!mandelbrot/data/.gitkeep
+mandelbrot/job_logs/*
+!mandelbrot/job_logs/.gitkeep
+
+# Image / dataset artifacts (also outside the folders above, just in case)
+*.ppm
+*.png
+*.bmp
+*.csv
+
+# --- SLURM logs -------------------------------------------------------------
+*.out
+*.err
+slurm-*.out
+
+# --- Compiled binaries and objects ------------------------------------------
+*.o
+*.obj
+*.a
+*.so
+*.exe
+# Common executable names for the variants (no extension on Linux)
+mandelbrot_serial
+mandelbrot_omp
+mandelbrot_mpi
+mandelbrot_cuda
+mandelbrot_hybrid
+
+# --- Editor / OS noise ------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# --- Local-only files (never pushed) ----------------------------------------
+# CLAUDE.md is kept locally as Claude Code's operational guide, not versioned.
+CLAUDE.md
