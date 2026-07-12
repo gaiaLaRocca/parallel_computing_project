@@ -28,6 +28,9 @@ mandelbrot_omp
 mandelbrot_mpi
 mandelbrot_cuda
 mandelbrot_hybrid
+# Default Makefile TARGET binary. Anchored to this exact path so the bare name
+# does not also match the mandelbrot/ source directory.
+/mandelbrot/src/mandelbrot
 
 # --- Editor / OS noise ------------------------------------------------------
 .vscode/
