@@ -41,3 +41,10 @@ mandelbrot_hybrid
 # --- Local-only files (never pushed) ----------------------------------------
 # CLAUDE.md is kept locally as Claude Code's operational guide, not versioned.
 CLAUDE.md
+
+# --- Versioned results (must come last: overrides data/* and *.csv above) ----
+# Keep the raw per-job CSVs and the merged dataset under version control: small
+# text, the reproducible data source behind the report. Figures stay ignored and
+# are added explicitly (git add -f) once they are final.
+!mandelbrot/data/run_*.csv
+!mandelbrot/data/merged.csv
