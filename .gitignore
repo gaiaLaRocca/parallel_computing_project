@@ -48,3 +48,7 @@ CLAUDE.md
 # are added explicitly (git add -f) once they are final.
 !mandelbrot/data/run_*.csv
 !mandelbrot/data/merged.csv
+# Per-row work profiles w_r from the serial N_max sweep: the "work per row"
+# imbalance figure needs the full distribution, which the aggregate metrics
+# (lambda, cov) in run_*.csv cannot reconstruct.
+!mandelbrot/data/rowprofile_*.csv
