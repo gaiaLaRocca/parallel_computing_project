@@ -13,11 +13,29 @@ OPT      ?=
 # escape counts on pixels near the boundary and break validation.
 CXXFLAGS := -std=c++17 -O3 -march=native -ffp-contract=off -Wall -Wextra $(OPT)
 
-OBJECTS  := mandelbrot.o image_io.o metrics.o main.o
-TARGET   := mandelbrot
+# OpenMP is enabled only on the parallel kernel's object and on its link line;
+# the shared objects contain no pragmas, so they build unchanged.
+OMPFLAGS := -fopenmp
 
-$(TARGET): $(OBJECTS)
+# I/O, metrics and driver are shared by every kernel; only the compute kernel
+# object differs between the serial and the OpenMP executables.
+SHARED_OBJECTS := image_io.o metrics.o main.o
+
+TARGET     := mandelbrot
+OMP_TARGET := mandelbrot_omp
+
+# Default build is the serial baseline; `make mandelbrot_omp` builds the OpenMP
+# variant (the job script does this before submitting the schedule sweep).
+$(TARGET): mandelbrot.o $(SHARED_OBJECTS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
+
+$(OMP_TARGET): mandelbrot_omp.o $(SHARED_OBJECTS)
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) -o $@ $^
+
+# The OpenMP kernel object needs -fopenmp so the #pragma omp directives are
+# honoured (without it they are silently ignored and the code stays serial).
+mandelbrot_omp.o: mandelbrot_omp.cpp mandelbrot.hpp
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) -c -o $@ $<
 
 mandelbrot.o: mandelbrot.cpp mandelbrot.hpp
 image_io.o:   image_io.cpp image_io.hpp mandelbrot.hpp
@@ -25,6 +43,6 @@ metrics.o:    metrics.cpp metrics.hpp mandelbrot.hpp
 main.o:       main.cpp image_io.hpp mandelbrot.hpp metrics.hpp
 
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f mandelbrot.o mandelbrot_omp.o $(SHARED_OBJECTS) $(TARGET) $(OMP_TARGET)
 
 .PHONY: clean
