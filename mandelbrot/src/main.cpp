@@ -12,6 +12,10 @@
 #include "mandelbrot.hpp"
 #include "metrics.hpp"
 
+#ifdef USE_MPI
+#include <mpi.h>
+#endif
+
 namespace {
 
 struct Options {
@@ -55,29 +59,47 @@ bool write_if_requested(bool (*writer)(const MandelbrotImage&, const std::string
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef USE_MPI
+    MPI_Init(&argc, &argv);
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#else
+    const int rank = 0;
+#endif
+
     const Options opts = parse_arguments(argc, argv);
 
     TimingSummary timing{};
     const MandelbrotImage img = run_timed_repetitions(opts, timing);
 
-    print_build_configuration();
-    print_metrics(img, timing);
+    // Only rank 0 holds the assembled matrix and performs all I/O; the other
+    // ranks cooperated inside the kernel (block compute + gather) and now exit.
+    int status = EXIT_SUCCESS;
+    if (rank == 0) {
+        print_build_configuration();
+        print_metrics(img, timing);
 
-    if (!opts.row_stats_path.empty()) {
-        const RowWorkProfile profile = build_row_work_profile(img);
-        if (!save_row_profile_csv(profile, opts.row_stats_path)) {
-            std::cerr << "error: cannot write " << opts.row_stats_path << "\n";
+        if (!opts.row_stats_path.empty()) {
+            const RowWorkProfile profile = build_row_work_profile(img);
+            if (!save_row_profile_csv(profile, opts.row_stats_path)) {
+                std::cerr << "error: cannot write " << opts.row_stats_path << "\n";
+            }
         }
+
+        if (!opts.csv_path.empty()) {
+            const RunRecord record = build_run_record(img, timing, opts);
+            if (!write_run_csv(record, opts.csv_path)) {
+                std::cerr << "error: cannot write " << opts.csv_path << "\n";
+            }
+        }
+
+        status = write_requested_outputs(img, opts) ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
-    if (!opts.csv_path.empty()) {
-        const RunRecord record = build_run_record(img, timing, opts);
-        if (!write_run_csv(record, opts.csv_path)) {
-            std::cerr << "error: cannot write " << opts.csv_path << "\n";
-        }
-    }
-
-    return write_requested_outputs(img, opts) ? EXIT_SUCCESS : EXIT_FAILURE;
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif
+    return status;
 }
 
 namespace {
@@ -137,6 +159,11 @@ MandelbrotImage run_timed_repetitions(const Options& opts, TimingSummary& timing
 
     MandelbrotImage img;
     for (int i = 0; i < opts.repetitions; ++i) {
+#ifdef USE_MPI
+        // Align every rank's start so the measured region is the parallel
+        // compute + gather, not a staggered launch.
+        MPI_Barrier(MPI_COMM_WORLD);
+#endif
         const auto start = std::chrono::steady_clock::now();
         img = compute_mandelbrot(opts.view, opts.width, opts.height, opts.max_iter);
         samples.push_back(elapsed_seconds(start));
@@ -239,6 +266,13 @@ RunRecord build_run_record(const MandelbrotImage& img, const TimingSummary& timi
     // it is only meaningful for a genuine decomposition (P >= 2).
     if (opts.parallelism >= 2) {
         r.lambda_block = lambda_block(profile, opts.parallelism);
+    }
+
+    // Communication fraction is an MPI concept: time in gather/scatter/messages
+    // over T(p). kernel_comm_seconds() is the last call's comm time (0 for the
+    // other paradigms); timing.min is the reported T(p).
+    if (paradigm == Paradigm::MPI && timing.min > 0.0) {
+        r.comm_fraction = kernel_comm_seconds() / timing.min;
     }
 
     // Warp divergence is a GPU concept: compute the matrix proxy only for CUDA.

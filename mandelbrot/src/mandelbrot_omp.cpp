@@ -48,6 +48,8 @@ bool symmetry_enabled() {
 
 Paradigm kernel_paradigm() { return Paradigm::OpenMP; }
 
+double kernel_comm_seconds() { return 0.0; }
+
 MandelbrotImage compute_mandelbrot(const Viewport& view, int width, int height,
                                    int max_iter) {
     MandelbrotImage img;

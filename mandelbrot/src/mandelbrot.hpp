@@ -39,3 +39,9 @@ enum class Paradigm { Serial, OpenMP, MPI, CUDA, Hybrid };
 // Set at compile time by the kernel source. The serial kernel returns Serial;
 // each parallel kernel overrides it with its own model.
 Paradigm kernel_paradigm();
+
+// Seconds spent in interprocess communication during the last
+// compute_mandelbrot call (MPI gather/scatter/messages). Only the MPI kernel
+// measures a non-zero value; the serial and OpenMP kernels return 0. The shared
+// driver divides it by T(p) to fill the MPI comm_fraction metric.
+double kernel_comm_seconds();
