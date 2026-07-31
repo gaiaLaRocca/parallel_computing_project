@@ -31,9 +31,11 @@
 set -euo pipefail
 
 # --- toolchain -------------------------------------------------------------
-# Verify exact module names on the cluster with `module available` before use.
+# gcc 8.5.0 is the node's system compiler (RHEL 8 default) and survives
+# `module purge`; the bare serial target builds with it, so no module is needed
+# (there is no loadable amd/gcc-8.5.0 - that string is a modulepath prefix).
 module purge
-module load amd/gcc-8.5.0
+g++ --version | head -1        # log the compiler (expected: 8.5.0)
 
 # --- build in-job ----------------------------------------------------------
 # Compile where we measure (-march=native tunes for this CPU). Default target is

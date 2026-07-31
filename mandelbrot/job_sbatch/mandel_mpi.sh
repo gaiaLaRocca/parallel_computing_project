@@ -23,10 +23,13 @@
 set -euo pipefail
 
 # --- toolchain -------------------------------------------------------------
-# Verify exact module names on the cluster with `module available` before use.
+# gcc 8.5.0 is the node's system compiler (RHEL 8 default) and survives
+# `module purge`; only OpenMPI needs a module (it provides mpicxx, which wraps
+# the system gcc). There is no loadable amd/gcc-8.5.0 - that string is a
+# modulepath prefix, and amd/gcc-8.5.0/openmpi-4.1.6 is the real MPI module.
 module purge
-module load amd/gcc-8.5.0
 module load amd/gcc-8.5.0/openmpi-4.1.6
+mpicxx --version | head -1     # log the compiler (expected: gcc 8.5.0)
 
 # --- build in-job ----------------------------------------------------------
 # Compile where we measure: -march=native tunes for this CPU, so building on a
