@@ -34,10 +34,15 @@
 set -euo pipefail
 
 # --- toolchain -------------------------------------------------------------
-# Confirm the exact module names with `module available` on the frontend (works
-# even while the compute nodes are down) before the first real submission.
+# gcc 8.5.0 is the node's system compiler (RHEL 8 default): it survives
+# `module purge`, nvcc uses it as its host compiler, and it builds the serial
+# baseline target too - so ONLY the CUDA toolkit needs a module. There is no
+# loadable amd/gcc-8.5.0 (that string is a modulepath prefix, not a module);
+# `module available` confirmed cuda-12.3.2 as the toolkit.
 module purge
-module load amd/gcc-8.5.0 amd/nvidia/cuda-12.3.2
+module load amd/nvidia/cuda-12.3.2
+g++ --version | head -1        # log the host compiler (expected: 8.5.0)
+nvcc --version | tail -1       # log the CUDA toolkit
 
 # --- record the GPU used ---------------------------------------------------
 # The effective-vs-peak GFLOP/s analysis needs the card's FP64 peak, which is
