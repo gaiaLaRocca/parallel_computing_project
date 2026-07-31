@@ -109,6 +109,140 @@ double warp_divergence_proxy(const MandelbrotImage& img, int warp_size) {
     return variance_sum / static_cast<double>(warp_count);
 }
 
+namespace {
+
+// Shared traversal for the block-aware warp metrics. Walk every block_x*block_y
+// block of the grid, cut each block into warps of `warp_size` consecutive linear
+// thread ids (id = tx + ty*block_x, the hardware's own linearisation), map each
+// lane back to its pixel, and accumulate both the within-warp variance and the
+// wasted-lane fraction in one pass. Out-of-bounds lanes of edge blocks are
+// skipped, so both figures measure fractal-induced divergence, not tiling edges.
+struct WarpStats {
+    double variance_mean;
+    double wasted_mean;
+};
+
+WarpStats warp_stats_blocked(const MandelbrotImage& img, int block_x,
+                             int block_y, int warp_size) {
+    const int width = img.width;
+    const int height = img.height;
+    const long long threads_per_block =
+        static_cast<long long>(block_x) * block_y;
+    const int blocks_x = (width + block_x - 1) / block_x;
+    const int blocks_y = (height + block_y - 1) / block_y;
+
+    double variance_sum = 0.0;
+    double wasted_sum = 0.0;
+    long long warp_count = 0;
+
+    std::vector<double> lane;
+    lane.reserve(static_cast<std::size_t>(warp_size));
+
+    for (int by = 0; by < blocks_y; ++by) {
+        for (int bx = 0; bx < blocks_x; ++bx) {
+            for (long long start = 0; start < threads_per_block;
+                 start += warp_size) {
+                const long long end =
+                    std::min(start + warp_size, threads_per_block);
+                lane.clear();
+                for (long long id = start; id < end; ++id) {
+                    const int col =
+                        bx * block_x + static_cast<int>(id % block_x);
+                    const int row =
+                        by * block_y + static_cast<int>(id / block_x);
+                    if (col < width && row < height) {
+                        lane.push_back(static_cast<double>(
+                            img.data[static_cast<std::size_t>(row) * width +
+                                     col]));
+                    }
+                }
+                if (lane.empty()) {
+                    continue;
+                }
+
+                double mean = 0.0;
+                double maximum = lane.front();
+                for (double v : lane) {
+                    mean += v;
+                    maximum = std::max(maximum, v);
+                }
+                mean /= static_cast<double>(lane.size());
+
+                double var = 0.0;
+                for (double v : lane) {
+                    const double diff = v - mean;
+                    var += diff * diff;
+                }
+                variance_sum += var / static_cast<double>(lane.size());
+                wasted_sum += (maximum > 0.0) ? (1.0 - mean / maximum) : 0.0;
+                ++warp_count;
+            }
+        }
+    }
+
+    if (warp_count == 0) {
+        return {METRIC_NA, METRIC_NA};
+    }
+    return {variance_sum / static_cast<double>(warp_count),
+            wasted_sum / static_cast<double>(warp_count)};
+}
+
+}  // namespace
+
+double warp_divergence_proxy_blocked(const MandelbrotImage& img, int block_x,
+                                     int block_y, int warp_size) {
+    if (warp_size < 1 || img.data.empty()) {
+        return METRIC_NA;
+    }
+    if (block_x < 1 || block_y < 1) {
+        return warp_divergence_proxy(img, warp_size);
+    }
+    return warp_stats_blocked(img, block_x, block_y, warp_size).variance_mean;
+}
+
+double warp_wasted_fraction_blocked(const MandelbrotImage& img, int block_x,
+                                    int block_y, int warp_size) {
+    if (warp_size < 1 || block_x < 1 || block_y < 1 || img.data.empty()) {
+        return METRIC_NA;
+    }
+    return warp_stats_blocked(img, block_x, block_y, warp_size).wasted_mean;
+}
+
+double warp_divergence_proxy_scattered(const MandelbrotImage& img,
+                                       int warp_size) {
+    if (warp_size < 1 || img.data.empty()) {
+        return METRIC_NA;
+    }
+    const std::size_t total = img.data.size();
+    const std::size_t num_warps = total / static_cast<std::size_t>(warp_size);
+    if (num_warps == 0) {
+        return warp_divergence_proxy(img, warp_size);
+    }
+
+    // Warp w owns pixels { w, w + num_warps, ..., w + (warp_size-1)*num_warps }:
+    // a stride of num_warps ~ total/warp_size spreads its lanes across the whole
+    // image, the maximally scattered assignment. The (w, k) -> w + k*num_warps
+    // map is a bijection onto [0, num_warps*warp_size), so every full warp's
+    // pixels are disjoint; any tail shorter than a full warp is dropped.
+    double variance_sum = 0.0;
+    for (std::size_t w = 0; w < num_warps; ++w) {
+        double mean = 0.0;
+        for (int k = 0; k < warp_size; ++k) {
+            mean += img.data[w + static_cast<std::size_t>(k) * num_warps];
+        }
+        mean /= static_cast<double>(warp_size);
+
+        double var = 0.0;
+        for (int k = 0; k < warp_size; ++k) {
+            const double diff =
+                img.data[w + static_cast<std::size_t>(k) * num_warps] - mean;
+            var += diff * diff;
+        }
+        variance_sum += var / static_cast<double>(warp_size);
+    }
+    return variance_sum / static_cast<double>(num_warps);
+}
+
 const char* paradigm_name(Paradigm paradigm) {
     switch (paradigm) {
         case Paradigm::Serial: return "serial";

@@ -60,7 +60,43 @@ double lambda_block(const RowWorkProfile& profile, int num_blocks);
 // `warp_size` contiguous pixels into one warp, this returns the mean over all
 // warps of the within-warp variance of the iteration counts. Zero means every
 // warp is perfectly convergent; larger means more divergence.
+//
+// This flat version assumes horizontal warps (blockDim.x a multiple of the warp
+// width). For an arbitrary block shape use warp_divergence_proxy_blocked, which
+// reproduces the exact thread<->pixel mapping the hardware would use.
 double warp_divergence_proxy(const MandelbrotImage& img, int warp_size = WARP_SIZE);
+
+// Block-shape-aware warp-divergence proxy. The GPU linearises a block as
+// id = threadIdx.x + threadIdx.y * blockDim.x and cuts it into warps of
+// `warp_size` consecutive ids, so the warp geometry follows the block shape:
+// block_x >= warp_size gives horizontal strips (low divergence, coalesced),
+// block_x < warp_size folds several image rows into one warp. This maps each
+// lane back to its pixel under that exact mapping and returns the mean
+// within-warp variance of the iteration counts. Out-of-bounds lanes of edge
+// blocks (the grid overhang from ceil division) are skipped, so the figure
+// reflects fractal-induced divergence, not grid-tiling edge effects. Passing
+// block_x = block_y = 0 falls back to the flat warp_divergence_proxy.
+double warp_divergence_proxy_blocked(const MandelbrotImage& img, int block_x,
+                                     int block_y, int warp_size = WARP_SIZE);
+
+// Cyclic ("scattered") warp-divergence proxy: the analytical GPU analogue of an
+// MPI cyclic decomposition. The matrix is flattened row-major and pixel p is
+// assigned to warp (p mod num_warps), so each warp's `warp_size` lanes sample
+// maximally separated pixels spanning the whole image. This is the worst-case
+// upper bound the horizontal/vertical block mappings are measured against; it
+// needs no kernel run, only the escape-time matrix, and makes the "cyclic is
+// devastating on the GPU" contrast quantitative.
+double warp_divergence_proxy_scattered(const MandelbrotImage& img,
+                                       int warp_size = WARP_SIZE);
+
+// Mean fraction of wasted lane-cycles under a block_x * block_y block mapping.
+// For this kernel a warp retires only when its slowest lane escapes, so its
+// cost is the warp's maximum iteration count and the wasted share is
+// 1 - mean/max over the lanes; this averages that over all warps. Unlike the
+// variance proxy it is bounded in [0, 1] and reads directly as "share of GPU
+// lane-cycles spent masked". Same edge-lane handling as the blocked proxy.
+double warp_wasted_fraction_blocked(const MandelbrotImage& img, int block_x,
+                                    int block_y, int warp_size = WARP_SIZE);
 
 // Human-readable tag written to the CSV `paradigm` column.
 const char* paradigm_name(Paradigm paradigm);
