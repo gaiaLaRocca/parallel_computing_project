@@ -17,6 +17,15 @@ reproducible metrics.
 > full. **The metric definitions below are the exact ones used in the report**
 > (same symbols, same formulas) so that code and report never diverge.
 
+> **Status (pre-cluster-run).** All four paradigms — serial, OpenMP, MPI and
+> CUDA — are implemented, sharing one driver, metrics layer and per-job CSV. The
+> compute kernel is the only file rewritten per paradigm, which is what makes
+> the cross-variant checksum comparison meaningful. The CPU variants reproduce
+> the serial checksum bit-for-bit locally; the CUDA kernel's checksum parity is
+> the first thing validated on the cluster, since it needs a GPU. What remains
+> is the measurement campaign: submit the sweeps, merge the per-job CSVs,
+> generate the plots.
+
 ---
 
 ## Why the Mandelbrot set
@@ -100,6 +109,15 @@ implementation details. The following are compared:
 - **Dynamic / master–worker (MPI):** the master hands out work chunks on demand.
   Near-ideal balancing, but introduces communication overhead. This is the
   central comparison of the project.
+
+On the **GPU** the analogue of the decomposition choice is the *thread↔pixel
+mapping* — the block geometry — and the conclusion inverts. A warp runs in
+lockstep and writes global memory fastest when its lanes touch contiguous
+addresses, so mapping **adjacent** pixels to a warp (horizontal, warp-aligned
+blocks) both minimizes divergence and coalesces the writes; the *cyclic*
+interleaving that balances CPU workers is instead the worst case here. Same
+irregularity, mirrored. The CUDA block-shape sweep (`MANDEL_BLOCK`) probes
+exactly this trade-off.
 
 ---
 
@@ -187,9 +205,13 @@ sharpen the analysis.
 - **MPI** — communication time vs compute time (fraction of `T(p)` spent in
   `scatter`/`gather`/messages); block vs cyclic vs dynamic master–worker;
   behaviour across ≥2 nodes. *(Optional: message counts, master contention.)*
-- **CUDA** — effective throughput (GFLOP/s or pixels/s) vs theoretical peak;
-  a measure of **warp divergence**; occupancy; host↔device transfer time.
-  *(Optional: block/grid sweep, shared-memory variants.)*
+- **CUDA** — effective throughput (GFLOP/s) vs theoretical peak; **warp
+  divergence** as a *deterministic proxy from the escape-time matrix* (no
+  profiler required, with block-aware and cyclic-worst-case variants); occupancy
+  (runtime API); host↔device transfer time (CUDA events). The block/grid
+  geometry is swept at runtime via `MANDEL_BLOCK`; the canonical kernel is
+  double-precision for checksum parity with the CPU baseline. *(Optional: an
+  FP32 throughput variant, shared-memory variants.)*
 
 > **CUDA speedup denominator.** `S = T(1) / T_gpu` compares a single GPU against
 > a single CPU core; state this explicitly and log the CPU baseline used. It is
@@ -283,18 +305,21 @@ boundary. Also fixed for stability: `PALETTE_RANGE=256` (colour stability across
 
 ## Roadmap
 
-- **Phase 0 — Setup and baseline.** Sources organized into the cluster
-  structure; correct, instrumented serial baseline (timing, image output,
-  checksum, load-imbalance profiling: `W`, `w_r`, `λ`, `CoV`).
-- **Phase 1 — Shared memory (OpenMP).** Parallelize the loop over pixels; compare
-  `static` / `dynamic` / `guided` scheduling against the imbalance.
-- **Phase 2 — Distributed memory (MPI).** Block and cyclic static decomposition;
-  dynamic master–worker scheme; image gather and communication-overhead
-  measurement.
-- **Phase 3 — GPU (CUDA).** Iteration kernel, thread↔pixel mapping, host↔device
-  transfer, block/grid tuning and occupancy.
-- **Phase 4 — Hybrid** *(optional)*. MPI+OpenMP / MPI+CUDA, time permitting.
-- **Phase 5 — Analysis and report.** Full benchmark campaign, scaling plots,
+- **Phase 0 — Setup and baseline.** *(implemented)* Sources organized into the
+  cluster structure; correct, instrumented serial baseline (timing, image
+  output, checksum, load-imbalance profiling: `W`, `w_r`, `λ`, `CoV`).
+- **Phase 1 — Shared memory (OpenMP).** *(implemented)* Parallelize the loop over
+  pixels; compare `static` / `dynamic` / `guided` scheduling against the imbalance.
+- **Phase 2 — Distributed memory (MPI).** *(implemented)* Block and cyclic static
+  decomposition; dynamic master–worker scheme; image gather and
+  communication-overhead measurement.
+- **Phase 3 — GPU (CUDA).** *(implemented; GPU correctness gate pending the first
+  cluster run)* Iteration kernel, thread↔pixel mapping, host↔device transfer,
+  block/grid tuning and occupancy.
+- **Phase 4 — Hybrid** *(optional, not started)*. MPI+OpenMP / MPI+CUDA, time
+  permitting.
+- **Phase 5 — Analysis and report.** *(pending the cluster campaign; the merge
+  and plotting scripts are in place)* Full benchmark campaign, scaling plots,
   discussion of results.
 
 ---
@@ -309,12 +334,13 @@ parallel_computing_project/
 │
 └── mandelbrot/                  <-- First experiment (others may follow)
     │
-    ├── src/                     <-- Sources (serial, OpenMP, MPI, CUDA, ...)
-    ├── job_sbatch/              <-- Scheduler scripts (.sh) for the jobs
+    ├── src/                     <-- Sources (serial, OpenMP, MPI, CUDA) + Makefile
+    ├── job_sbatch/              <-- Scheduler scripts (.sh): one sweep per paradigm
+    ├── analysis/                <-- Python merge + plotting (paradigm-agnostic)
     ├── job_logs/                <-- Scheduler output logs (git-ignored)
     │   └── .gitkeep
-    └── data/                    <-- Generated images / CSV datasets (git-ignored)
-        └── .gitkeep
+    └── data/                    <-- Per-job CSVs (run_*.csv, versioned);
+        └── .gitkeep                 images/figures git-ignored
 ```
 
 The root is a container for multiple experiments: `mandelbrot/` is the first, and
