@@ -19,26 +19,32 @@
 
 #SBATCH --account=g.larocca-thesis       # billing account
 #SBATCH --job-name=mandel_cuda_scaling
-#SBATCH --partition=<gpu_partition>      # verify a GPU partition with `sinfo`
+#SBATCH --partition=only-one-gpu         # gnode01 (8x L40S), one-GPU partition.
+                                         # Alt: ulow (default) / debug (short tests)
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1                 # the serial T(1) baselines run here too
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:1                      # typed alt if rejected: --gres=gpu:nvl40s_0:1
 #SBATCH --time=00:50:00                   # dominated by the large serial baselines
 #SBATCH --output=job_logs/out_%x_%j.log   # relative to $SLURM_SUBMIT_DIR
 
 set -euo pipefail
 
 # --- toolchain -------------------------------------------------------------
-# Verify exact module names on the cluster with `module available` before use.
+# Confirm the exact module names with `module available` on the frontend (works
+# even while the compute nodes are down) before the first real submission.
 module purge
 module load amd/gcc-8.5.0 amd/nvidia/cuda-12.3.2
 
 # --- record the GPU used ---------------------------------------------------
+# gnode01 = L40S: FP64 is 1/64 of FP32 (~1.4 TFLOP/s = ~1400 GFLOP/s peak), the
+# number to pass to plot_metrics.py --gpu-peak-gflops for the throughput figure.
 nvidia-smi -L
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv || true
 
 # --- build in-job ----------------------------------------------------------
+# --fmad=false keeps the escape counts bit-identical to the CPU baseline. If
+# -arch=native is unavailable, pin it: sm_89 (gnode01 L40S) / sm_86 (gnode02 A6000).
 cd "$SLURM_SUBMIT_DIR/mandelbrot/src"
 make mandelbrot mandelbrot_cuda NVARCH=-arch=native
 
