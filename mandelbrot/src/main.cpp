@@ -230,6 +230,20 @@ void print_metrics(const MandelbrotImage& img, const TimingSummary& timing) {
     std::cout << std::setprecision(4);
     std::cout << "row_cov        " << lb.coefficient_of_variation << "\n";
     std::cout << "row_imbalance  " << lb.imbalance_ratio << "\n";
+
+    // CUDA-only: the divergence proxy under the launched block geometry (the
+    // value that reaches the CSV), the scattered/cyclic worst case for the
+    // GPU-vs-MPI contrast, and the interpretable wasted-lane fraction. These
+    // land in the sweep log; occupancy/transfer are in the CSV, not reprinted.
+    if (kernel_paradigm() == Paradigm::CUDA) {
+        const int bx = kernel_block_x();
+        const int by = kernel_block_y();
+        std::cout << "block_shape    " << bx << "x" << by << "\n";
+        std::cout << std::setprecision(4);
+        std::cout << "warp_div_block " << warp_divergence_proxy_blocked(img, bx, by) << "\n";
+        std::cout << "warp_div_scat  " << warp_divergence_proxy_scattered(img) << "\n";
+        std::cout << "warp_wasted    " << warp_wasted_fraction_blocked(img, bx, by) << "\n";
+    }
 }
 
 // Assemble the canonical result row from a single run. Only intra-run metrics
@@ -275,12 +289,16 @@ RunRecord build_run_record(const MandelbrotImage& img, const TimingSummary& timi
         r.comm_fraction = kernel_comm_seconds() / timing.min;
     }
 
-    // Warp divergence is a GPU concept: compute the matrix proxy only for CUDA.
+    // The GPU-only columns: the divergence proxy comes from the matrix (shared
+    // code) under the block shape the kernel actually launched, so a block-shape
+    // sweep records the divergence of each geometry; occupancy and transfer time
+    // come from the CUDA kernel's own accessors.
     if (paradigm == Paradigm::CUDA) {
-        r.warp_divergence = warp_divergence_proxy(img);
+        r.warp_divergence =
+            warp_divergence_proxy_blocked(img, kernel_block_x(), kernel_block_y());
+        r.occupancy = kernel_occupancy();
+        r.transfer_time = kernel_transfer_seconds();
     }
-    // occupancy / transfer_time (CUDA) and comm_fraction (MPI) are measured by
-    // those paradigms' thin driver layers and set on the record there.
 
     r.checksum = checksum(img);
     return r;

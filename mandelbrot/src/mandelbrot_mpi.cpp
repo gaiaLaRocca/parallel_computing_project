@@ -104,6 +104,14 @@ Paradigm kernel_paradigm() { return Paradigm::MPI; }
 
 double kernel_comm_seconds() { return g_last_comm_seconds; }
 
+double kernel_occupancy() { return 0.0; }
+
+double kernel_transfer_seconds() { return 0.0; }
+
+int kernel_block_x() { return 0; }
+
+int kernel_block_y() { return 0; }
+
 MandelbrotImage compute_mandelbrot(const Viewport& view, int width, int height,
                                    int max_iter) {
     int rank = 0;
