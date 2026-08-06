@@ -22,7 +22,10 @@ Per-paradigm (the mechanism)
 
 Baseline (level 1, deterministic, logically first)
   * the per-row work profile w_r vs r — the "mountain" that makes lambda and CoV
-    visible; and serial cost T(1) vs problem size and vs max_iter.
+    visible; and serial cost T(1) vs problem size and vs max_iter;
+  * the decomposition bound S <= P/lambda(P) for block/cyclic/dynamic, computed
+    from that same w_r by block_imbalance.py. Purely predictive — it exists
+    before any MPI run, so the measured curves can be judged against it.
 
 The p axis is log2 (powers of two would otherwise crowd the high end). Colours
 follow a fixed, colourblind-checked categorical palette assigned per entity (not
@@ -94,6 +97,9 @@ def main(argv=None):
     elif args.merged:
         print("warning: no rows in {}".format(args.merged), file=sys.stderr)
 
+    record("block_imbalance",
+           plot_block_imbalance(args.block_imbalance, args.outdir, args.formats))
+
     if args.row_stats:
         for path in sorted(glob.glob(args.row_stats)):
             name = "row_profile:" + os.path.basename(path)
@@ -113,6 +119,10 @@ def parse_args(argv):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--merged", default=os.path.join(data_dir, "merged.csv"),
                         help="merged dataset from merge_metrics.py (default: %(default)s)")
+    parser.add_argument("--block-imbalance",
+                        default=os.path.join(data_dir, "block_imbalance.csv"),
+                        help="prediction table from block_imbalance.py, drawn as the "
+                             "decomposition bound (default: %(default)s)")
     parser.add_argument("--row-stats", default=None,
                         help="path or glob of a --row-stats CSV (row,iterations) for "
                              "the per-row load profile")
@@ -493,6 +503,77 @@ def read_row_profile(path):
                 data.append((r, w))
     data.sort()
     return data
+
+
+# A predicted scheme borrows the colour and marker of the MPI series it forecasts,
+# so prediction and measurement read as one entity across figures; the dashed
+# line is what distinguishes them.
+PREDICTION_ENTITY = {"block": "block", "cyclic": "cyclic", "dynamic": "master_worker"}
+
+
+def plot_block_imbalance(path, outdir, formats):
+    """Draw the decomposition bounds S <= P/lambda(P) from block_imbalance.py.
+
+    These are predictions derived from the serial w_r alone, so the figure exists
+    before any MPI run does: overlaying the measured speedups on it later turns
+    the gap between the two into the paper's argument (what the static model
+    fails to charge for is communication and scheduling overhead).
+    """
+    configs = read_block_imbalance(path)
+    if not configs:
+        return False
+
+    for (resolution, max_iter), series in sorted(configs.items()):
+        fig, ax = new_axes()
+        all_p = set()
+        for scheme in ("block", "cyclic", "dynamic"):
+            points = sorted(series.get(scheme, []))
+            if not points:
+                continue
+            xs = [p for p, _ in points]
+            ys = [bound for _, bound in points]
+            all_p.update(xs)
+            color, marker = series_style(("mpi", PREDICTION_ENTITY[scheme]))
+            ax.plot(xs, ys, marker=marker, color=color, linestyle="--",
+                    label="{} (predicted)".format(scheme), linewidth=2,
+                    markersize=7, markeredgecolor=SURFACE, markeredgewidth=0.8)
+        if not all_p:
+            plt.close(fig)
+            continue
+
+        # Ideal drawn over the full span, but only powers of two are labelled:
+        # the sweep also probes the odd master-worker sizes (3, 5, 9, 17), whose
+        # ticks would collide with their neighbours on a log2 axis.
+        span = [min(all_p), max(all_p)]
+        ax.plot(span, span, linestyle=":", color=MUTED, linewidth=1.5,
+                label=r"ideal  $S = p$", zorder=1)
+        set_log2_p_axis(ax, [p for p in sorted(all_p) if p & (p - 1) == 0])
+        ax.set_xlabel(r"ranks  $p$")
+        ax.set_ylabel(r"predicted bound  $S \leq p\,/\,\lambda(p)$")
+        ax.set_title("Decomposition bound   ({}, max_iter = {})".format(
+            resolution or "?", max_iter or "?"))
+        ax.legend(frameon=False)
+        save_figure(fig, outdir, "block_imbalance_{}_n{}".format(
+            resolution or "na", max_iter or "na"), formats)
+
+    return True
+
+
+def read_block_imbalance(path):
+    """Read block_imbalance.csv into {(resolution, max_iter): {scheme: [(p, bound)]}}."""
+    if not path or not os.path.exists(path):
+        return {}
+    configs = {}
+    with open(path, newline="") as handle:
+        for row in csv.DictReader(handle):
+            p = to_int(row.get("p"))
+            bound = to_float(row.get("speedup_bound"))
+            scheme = (row.get("scheme") or "").strip()
+            if p is None or bound is None or scheme not in PREDICTION_ENTITY:
+                continue
+            key = (row.get("resolution", ""), row.get("max_iter", ""))
+            configs.setdefault(key, {}).setdefault(scheme, []).append((p, bound))
+    return configs
 
 
 if __name__ == "__main__":

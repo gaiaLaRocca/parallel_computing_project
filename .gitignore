@@ -32,6 +32,10 @@ mandelbrot_hybrid
 # does not also match the mandelbrot/ source directory.
 /mandelbrot/src/mandelbrot
 
+# Python bytecode cache, created whenever an analysis script is run or imported.
+__pycache__/
+*.pyc
+
 # --- Editor / OS noise ------------------------------------------------------
 .vscode/
 .idea/
