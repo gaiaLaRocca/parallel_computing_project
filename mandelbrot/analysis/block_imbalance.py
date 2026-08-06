@@ -38,6 +38,8 @@ so lambda is the factor by which the heaviest worker exceeds the fair share
            ``S <= min(P, W / max_r w_r) = min(P, H / lambda_row)``. This is an
            idealisation - it charges nothing for the master's messages - so it
            is an upper bound the measured master-worker curve cannot exceed.
+           Note ``P`` counts the *workers*: an ``np = 17`` master-worker run is
+           predicted by the ``P = 16`` row, since the master computes nothing.
 
 Output: ``data/block_imbalance.csv`` with one row per
 ``(source, scheme, p)``, consumed by ``plot_metrics.py --block-imbalance``.
@@ -52,11 +54,18 @@ import os
 import re
 import sys
 
-# Rank counts to evaluate. Powers of two up to the 64 cores of a single gnode01
-# (no reachable partition offers a second node), plus the odd master-worker
-# sizes np = W + 1 the MPI sweep uses, so the prediction lands on exactly the
-# points the measurements will occupy.
-DEFAULT_P_VALUES = [2, 3, 4, 5, 8, 9, 16, 17, 32, 64]
+# Decomposition sizes to evaluate: the points the sweeps actually realise, so
+# prediction and measurement land on the same abscissa. Capped at 32 because
+# gnode01 is 2 sockets x 32 cores and the sweeps stay inside one socket, keeping
+# the curves free of inter-socket effects.
+#
+# P is the number of processes that DIVIDE THE ROWS, which is not always the
+# number of ranks: an MPI master-worker launched with np = 17 has 16 computing
+# workers, so its prediction is the P = 16 column and its speedup cannot exceed
+# 16. Comparing it against a P = 17 entry would be an error - hence only the
+# realisable (even) sizes are listed. Pass --p for others; lambda is defined for
+# any P up to the row count.
+DEFAULT_P_VALUES = [2, 4, 8, 16, 32]
 
 OUTPUT_COLUMNS = ["source", "resolution", "max_iter", "scheme", "p",
                   "lambda", "speedup_bound"]
