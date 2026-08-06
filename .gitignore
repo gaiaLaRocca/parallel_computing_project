@@ -56,3 +56,7 @@ CLAUDE.md
 # imbalance figure needs the full distribution, which the aggregate metrics
 # (lambda, cov) in run_*.csv cannot reconstruct.
 !mandelbrot/data/rowprofile_*.csv
+# Predicted decomposition bounds from block_imbalance.py. Derived from the row
+# profiles, but versioned like merged.csv: it is the prediction the measured
+# parallel curves are judged against, so it belongs to the record.
+!mandelbrot/data/block_imbalance.csv

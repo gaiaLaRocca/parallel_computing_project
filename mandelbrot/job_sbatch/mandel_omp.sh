@@ -11,12 +11,23 @@
 
 #SBATCH --account=g.larocca-thesis             # billing account - REQUIRED, fill in
 #SBATCH --job-name=mandel_omp
-#SBATCH --partition=<cpu_partition>      # verify a CPU partition with `sinfo`
+#SBATCH --partition=ulow                 # gnode01, QOS no-gpu; same node as the
+                                         # serial Level 1 sweep, so T(1) and T(p)
+                                         # are same-hardware by construction
 #SBATCH --nodes=1                        # OpenMP is shared-memory: one node
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16               # max threads in the sweep
+#SBATCH --cpus-per-task=32               # max threads in the sweep. gnode01 is
+                                         # 2 sockets x 32 cores (ThreadsPerCore=1,
+                                         # no SMT), so 32 fills exactly ONE socket:
+                                         # with OMP_PROC_BIND=close the whole sweep
+                                         # stays in a single NUMA domain and the
+                                         # curve measures scheduling, not the
+                                         # inter-socket link. Asking for all 64
+                                         # would also idle behind a busy node.
 #SBATCH --gres=gpu:0
-#SBATCH --time=00:30:00
+#SBATCH --time=00:15:00                  # the sweep is ~1 min of compute; a short
+                                         # limit makes the 32-core request far
+                                         # easier for the backfill scheduler to place
 #SBATCH --output=mandelbrot/job_logs/out_%x_%j.log  # relative to $SLURM_SUBMIT_DIR
 
 set -euo pipefail
@@ -68,7 +79,7 @@ export OMP_PROC_BIND=close
 for SCHED in static "dynamic,1" "dynamic,16" "dynamic,64" guided; do
     LABEL=${SCHED//,/_}                  # "dynamic,16" -> "dynamic_16" for paths
     export OMP_SCHEDULE="$SCHED"
-    for P in 2 4 8 16; do
+    for P in 2 4 8 16 32; do
         export OMP_NUM_THREADS=$P
         ./mandelbrot_omp --resolution "$RES" --max-iter "$ITER" --repeat "$REPEAT" \
             --p "$P" --schedule "$SCHED" \
