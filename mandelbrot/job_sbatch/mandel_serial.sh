@@ -20,7 +20,9 @@
 
 #SBATCH --account=g.larocca-thesis       # billing account
 #SBATCH --job-name=mandel_serial
-#SBATCH --partition=<cpu_partition>      # verify a CPU partition with `sinfo`
+#SBATCH --partition=ulow                 # default partition, gnode01 - same node
+                                         # as the CUDA runs, so timings stay
+                                         # comparable. Alt: debug (short tests)
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1                # single core: this is the baseline
