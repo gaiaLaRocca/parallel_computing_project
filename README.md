@@ -85,6 +85,39 @@ These are the expectations the experiments are designed to test.
   to **host↔device transfer** of the result. Occupancy and block/grid geometry
   become the tuning levers.
 
+### Revised by measurement — the Level 1 sweep
+
+The serial cross-sweep (`mandel_serial.sh`, 2 resolutions × 3 `max_iter`, bare
+kernel on one core of `gnode01`) settles the imbalance question before any
+parallel run, and it corrects the expectation stated above:
+
+| `max_iter` | CoV @512² | CoV @1024² | `λ_row` @512² | `λ_row` @1024² |
+| ---------- | --------- | ---------- | ------------- | -------------- |
+| 500        | 0.9486    | 0.9485     | 2.7216        | 2.7236         |
+| 1000       | 0.9679    | 0.9680     | 2.7646        | 2.7638         |
+| 5000       | 0.9850    | 0.9854     | 2.8061        | 2.8031         |
+
+- **Resolution has essentially no effect** — the metrics agree to the fourth
+  decimal across a 4× change in pixel count, as the scale-invariance argument
+  predicted. `W` scales exactly 4×, so resolution buys work, not imbalance.
+- **`max_iter` has a real but *weak, saturating* effect**, not the strong one
+  anticipated: a **10×** increase moves CoV by +3.8 % and `λ_row` by +3.1 %, in
+  decreasing increments. The mechanism is visible in the profile: the cheapest
+  row is independent of the cap (rows fully outside the set escape in a few
+  iterations regardless), while both the mean and the maximum are dominated by
+  interior pixels and grow with it — and a ratio between two quantities that
+  grow together tends to a constant.
+
+The honest conclusion is stronger than the original hypothesis: **the imbalance
+is intrinsic to the geometry of the set**, nearly invariant in both knobs. It is
+a property to be engineered around, not a parameter to be dialled up.
+
+Note also that `λ_row ≈ 2.8` is *small*: the row-granularity ceiling is
+`H/λ_row ≈ 188` for a 512-row grid, far above the 64 cores available. Row
+granularity is therefore never the binding constraint here — what binds is
+**how rows are grouped**, which is exactly what `analysis/block_imbalance.py`
+predicts (§ *Level 1*).
+
 ---
 
 ## Paradigms under study
@@ -164,6 +197,10 @@ count of each pixel — *not* the rendered image. All work metrics derive from i
   block assigned to processor `p` and `W̄ = W / P`. Since aggregating rows
   averages out peaks, `λ_P ≤ λ`, with equality only when `P = H`. When computing
   a predicted bound, be explicit about which `λ` is used.
+
+- **Predicted decomposition bounds.** `λ_P` is derived offline from the
+  `--row-stats` dump by `analysis/block_imbalance.py`, which covers the `block`,
+  `cyclic` and `dynamic` schemes under one definition — see its docstring.
 
 > **Baseline invariant.** The scaling reference is the *bare* kernel:
 > `USE_PRUNING` and `USE_SYMMETRY` are **disabled** so that `n(r, c)` reflects
@@ -277,7 +314,8 @@ occupancy,warp_divergence,transfer_time,checksum
 **Experimental variables**
 
 - **Resolution:** e.g. 512², 1024², 2048², 4096².
-- **`max_iter`:** e.g. 100, 1000, 5000 — more iterations increase the imbalance.
+- **`max_iter`:** e.g. 100, 1000, 5000. Raising it increases the imbalance, but
+  only weakly and with saturation — see the measured Level 1 result below.
 - **Degree of parallelism:** number of OpenMP threads; number of MPI ranks and
   their distribution across nodes; CUDA block/grid geometry.
 
@@ -336,7 +374,8 @@ parallel_computing_project/
     │
     ├── src/                     <-- Sources (serial, OpenMP, MPI, CUDA) + Makefile
     ├── job_sbatch/              <-- Scheduler scripts (.sh): one sweep per paradigm
-    ├── analysis/                <-- Python merge + plotting (paradigm-agnostic)
+    ├── analysis/                <-- Python merge, imbalance prediction, plotting
+    │                                (paradigm-agnostic)
     ├── job_logs/                <-- Scheduler output logs (git-ignored)
     │   └── .gitkeep
     └── data/                    <-- Per-job CSVs (run_*.csv, versioned);

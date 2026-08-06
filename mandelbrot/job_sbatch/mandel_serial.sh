@@ -4,15 +4,21 @@
 # The bare kernel (no USE_PRUNING/USE_SYMMETRY) is the imbalance reference: W,
 # lambda_row, lambda_block and CoV reflect the real per-pixel work.
 #
-# Two axes, two stories:
-#   N_max      -> STRONG effect on imbalance. Raising the cap makes the interior/
-#                 boundary pixels iterate much longer than the fast-escaping
-#                 exterior, so lambda and CoV grow.
-#   resolution -> WEAK effect on imbalance: lambda and CoV are ratios (max/mean,
-#                 std/mean), hence nearly scale-invariant - they converge as the
-#                 grid refines. What resolution really drives is total work W and
-#                 time. Sweeping it shows the imbalance is robust in size and
-#                 characterises the cost scaling.
+# Two axes. As measured on gnode01 (job 31391), both move the imbalance far less
+# than expected - which is the finding, not a defect of the sweep:
+#   N_max      -> WEAK, SATURATING effect. Raising the cap does make interior and
+#                 boundary pixels iterate longer, but 10x (500 -> 5000) buys only
+#                 +3.8% CoV and +3.1% lambda, in decreasing increments. The cheap
+#                 rows are cap-independent (the exterior escapes in a few
+#                 iterations regardless) while mean and max both grow with the
+#                 cap, and their ratio therefore tends to a constant.
+#   resolution -> NO measurable effect: lambda and CoV are ratios (max/mean,
+#                 std/mean), hence scale-invariant - 512^2 and 1024^2 agree to
+#                 the fourth decimal. What resolution drives is total work W
+#                 (exactly 4x) and time.
+# Conclusion: the imbalance is intrinsic to the geometry of the set, to be
+# engineered around rather than dialled up. See README section "Revised by
+# measurement".
 #
 # Each run also dumps its per-row work profile w_r for the "work per row" figure.
 #
