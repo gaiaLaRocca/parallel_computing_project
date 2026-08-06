@@ -1,5 +1,5 @@
 #!/bin/bash
-# MPI strong-scaling sweep across two nodes.
+# MPI strong-scaling sweep on a single node.
 #
 # Measures the serial baseline T(1) and the MPI T(p) for the three row
 # decompositions (block, cyclic, dynamic master-worker) at fixed N_max and
@@ -8,16 +8,31 @@
 # (analysis/merge_metrics.py) concatenates them and fills the relational
 # columns (speedup/efficiency/karp_flatt_e) by matching each T(p) to this T(1).
 #
+# SINGLE NODE, AND THAT IS A CONSTRAINT, NOT A CHOICE. This account reaches only
+# ulow, only-one-gpu and ice4hpc, and all three expose gnode01 alone, so a
+# --nodes=2 request is rejected at submit time. Every message therefore travels
+# through shared memory rather than the network, and comm_fraction is an
+# optimistic lower bound on what a real multi-node run would pay - state this in
+# the report rather than presenting the numbers as inter-node communication.
+# The compensation is that T(1) and T(p) are same-hardware by construction, and
+# that the MPI and OpenMP curves become directly comparable: both sweep the same
+# process counts on the same socket of the same node, so their difference is the
+# programming model and nothing else.
+#
 # Submit from the experiment root:  sbatch mandelbrot/job_sbatch/mandel_mpi.sh
 
 #SBATCH --account=g.larocca-thesis             # billing account - REQUIRED, fill in
 #SBATCH --job-name=mandel_mpi
-#SBATCH --partition=<cpu_partition>      # verify a CPU partition with `sinfo`
-#SBATCH --nodes=2                        # >1 node: exercise genuine inter-node messages
-#SBATCH --ntasks-per-node=9              # 2x9 = 18 slots, enough for the largest run (np=17)
+#SBATCH --partition=ulow                 # gnode01, QOS no-gpu; same node as the
+                                         # serial and OpenMP sweeps
+#SBATCH --nodes=1                        # forced: no reachable partition has two
+#SBATCH --ntasks=33                      # largest run is the master-worker at 32
+                                         # workers, i.e. np = 33. The static
+                                         # schemes use 32 of these, one socket.
 #SBATCH --cpus-per-task=1                # pure MPI: one core per rank
 #SBATCH --gres=gpu:0
-#SBATCH --time=00:30:00
+#SBATCH --time=00:15:00                  # ~1 min of compute; a short limit is far
+                                         # easier for backfill to place
 #SBATCH --output=mandelbrot/job_logs/out_%x_%j.log  # relative to $SLURM_SUBMIT_DIR
 
 set -euo pipefail
@@ -48,16 +63,22 @@ REPEAT=5
 JOB=$SLURM_JOB_ID
 NODES=$SLURM_JOB_NUM_NODES
 
-# Round-robin the ranks across the two nodes (-m cyclic): even the smallest
-# run pays real network latency instead of packing onto one node, which is the
-# communication regime this sweep is meant to measure. NB: this rank->node
-# placement is unrelated to the row->rank decomposition also named "cyclic".
-LAUNCH="srun --kill-on-bad-exit=1 -m cyclic"
+# Pin ranks to cores and fill socket 0 before touching socket 1 (gnode01 is
+# 2 sockets x 32 cores). This is the MPI analogue of the OpenMP sweep's
+# OMP_PROC_BIND=close: without it SLURM may spread ranks over both sockets even
+# for np=2, and the small-np points would carry a cross-socket penalty the large
+# ones do not, bending the speedup curve for a reason that has nothing to do
+# with the decomposition. Only the np=33 master-worker point spills one rank
+# onto socket 1, unavoidably - 32 workers plus a master exceed one socket.
+# NB: "block" here is rank->core placement, unrelated to the row->rank
+# decomposition also called "block".
+LAUNCH="srun --kill-on-bad-exit=1 --cpu-bind=cores --distribution=block:block"
 
 # --- T(1): true serial baseline on this partition ---------------------------
 # One rank of the same allocation: same hardware as the parallel points, as
-# required for valid speedups. (The MPI sweep is multi-node while OpenMP is
-# single-node; the nodes column records this for the analysis.)
+# required for valid speedups - and, since the OpenMP sweep measures its own
+# T(1) the same way on the same node, the two paradigms' speedups are on a
+# common footing.
 srun -N 1 -n 1 ./mandelbrot \
     --resolution "$RES" --max-iter "$ITER" --repeat "$REPEAT" \
     --p 1 --nodes 1 --schedule - \
@@ -72,7 +93,7 @@ srun -N 1 -n 1 ./mandelbrot \
 # ranks); the --schedule label just tags the CSV row.
 for DECOMP in block cyclic; do
     export MPI_DECOMP=$DECOMP
-    for NP in 2 4 8 16; do
+    for NP in 2 4 8 16 32; do
         $LAUNCH -n "$NP" ./mandelbrot_mpi \
             --resolution "$RES" --max-iter "$ITER" --repeat "$REPEAT" \
             --p "$NP" --nodes "$NODES" --schedule "$DECOMP" \
@@ -82,12 +103,15 @@ done
 
 # --- T(p): dynamic master-worker ---------------------------------------------
 # Rank 0 coordinates and computes nothing, so np = workers + 1: sweeping
-# np in {3,5,9,17} keeps the COMPUTING units at {2,4,8,16}, aligned with the
-# static schemes and the OpenMP thread sweep. For the same reason --p records
-# the worker count, not np: speedup and efficiency are per computing unit
-# (the idle master is a stated caveat in the report, recoverable as p+1).
+# np in {3,5,9,17,33} keeps the COMPUTING units at {2,4,8,16,32}, aligned with
+# the static schemes, the OpenMP thread sweep and the P column of
+# analysis/block_imbalance.py. For the same reason --p records the worker count,
+# not np: speedup and efficiency are per computing unit, and comparing this
+# curve against a prediction indexed by np would manufacture a shortfall that is
+# an artefact of the abscissa (the idle master is a stated caveat in the report,
+# recoverable as p+1).
 export MPI_DECOMP=dynamic
-for NP in 3 5 9 17; do
+for NP in 3 5 9 17 33; do
     W=$((NP - 1))
     $LAUNCH -n "$NP" ./mandelbrot_mpi \
         --resolution "$RES" --max-iter "$ITER" --repeat "$REPEAT" \
