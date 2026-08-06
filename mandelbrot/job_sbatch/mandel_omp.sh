@@ -82,7 +82,7 @@ for SCHED in static "dynamic,1" "dynamic,16" "dynamic,64" guided; do
     for P in 2 4 8 16 32; do
         export OMP_NUM_THREADS=$P
         ./mandelbrot_omp --resolution "$RES" --max-iter "$ITER" --repeat "$REPEAT" \
-            --p "$P" --schedule "$SCHED" \
+            --p "$P" --schedule "$LABEL" \
             --csv "$DATA/run_${JOB}_${LABEL}_p${P}.csv"
     done
 done

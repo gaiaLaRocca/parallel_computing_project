@@ -267,6 +267,22 @@ std::string field(double value) {
     return os.str();
 }
 
+// Free-text fields reach the CSV from the command line, so they can carry a
+// separator: OpenMP's chunked schedules are spelled "dynamic,16". Written raw
+// that comma splits the record and silently shifts every later column by one -
+// a corruption that parses fine and only shows up as nonsense in the values.
+// Substitute rather than quote: the whole pipeline (awk, cut, the plotting
+// scripts) assumes a comma-free CSV, and "dynamic_16" is the label we want.
+std::string field(const std::string& text) {
+    std::string safe = text;
+    for (char& c : safe) {
+        if (c == ',' || c == '"' || c == '\n' || c == '\r') {
+            c = '_';
+        }
+    }
+    return safe;
+}
+
 }  // namespace
 
 bool write_run_csv(const RunRecord& record, const std::string& path) {
@@ -283,7 +299,7 @@ bool write_run_csv(const RunRecord& record, const std::string& path) {
            "occupancy,warp_divergence,transfer_time,checksum\n";
 
     out << paradigm_name(record.paradigm) << ','
-        << record.schedule << ','
+        << field(record.schedule) << ','
         << record.p << ','
         << record.nodes << ','
         << record.width << 'x' << record.height << ','
