@@ -18,7 +18,7 @@
 #SBATCH --cpus-per-task=1                # pure MPI: one core per rank
 #SBATCH --gres=gpu:0
 #SBATCH --time=00:30:00
-#SBATCH --output=job_logs/out_%x_%j.log  # relative to $SLURM_SUBMIT_DIR
+#SBATCH --output=mandelbrot/job_logs/out_%x_%j.log  # relative to $SLURM_SUBMIT_DIR
 
 set -euo pipefail
 

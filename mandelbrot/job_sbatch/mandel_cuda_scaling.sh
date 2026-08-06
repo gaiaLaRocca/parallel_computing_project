@@ -20,13 +20,13 @@
 #SBATCH --account=g.larocca-thesis       # billing account
 #SBATCH --job-name=mandel_cuda_scaling
 #SBATCH --partition=only-one-gpu         # gnode01 (8x L40S), one-GPU partition.
-                                         # Alt: ulow (default) / debug (short tests)
+                                         # ulow cannot: its QOS is no-gpu.
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1                 # the serial T(1) baselines run here too
 #SBATCH --gres=gpu:1                      # typed alt if rejected: --gres=gpu:nvl40s_0:1
 #SBATCH --time=00:50:00                   # dominated by the large serial baselines
-#SBATCH --output=job_logs/out_%x_%j.log   # relative to $SLURM_SUBMIT_DIR
+#SBATCH --output=mandelbrot/job_logs/out_%x_%j.log   # relative to $SLURM_SUBMIT_DIR
 
 set -euo pipefail
 

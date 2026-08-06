@@ -20,15 +20,16 @@
 
 #SBATCH --account=g.larocca-thesis       # billing account
 #SBATCH --job-name=mandel_serial
-#SBATCH --partition=ulow                 # default partition, gnode01 - same node
-                                         # as the CUDA runs, so timings stay
-                                         # comparable. Alt: debug (short tests)
+#SBATCH --partition=ulow                 # gnode01, QOS no-gpu: the CPU partition
+                                         # this account may use. Same node as the
+                                         # CUDA runs, so timings stay comparable.
+                                         # PreemptMode=OFF, OverSubscribe=NO.
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1                # single core: this is the baseline
 #SBATCH --gres=gpu:0
 #SBATCH --time=00:45:00                  # 6 runs, up to 1024^2 x 5000 on 1 core
-#SBATCH --output=job_logs/out_%x_%j.log  # relative to $SLURM_SUBMIT_DIR
+#SBATCH --output=mandelbrot/job_logs/out_%x_%j.log  # relative to $SLURM_SUBMIT_DIR
 
 set -euo pipefail
 
