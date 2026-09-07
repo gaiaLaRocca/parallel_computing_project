@@ -24,6 +24,13 @@ struct Options {
     int max_iter = 1000;
     int repetitions = 1;
     Viewport view{-2.0, 0.5, -1.25, 1.25};
+    // Zoom window for the self-similarity figures: a centre in the complex
+    // plane plus the width of the sampled real interval. A non-positive span
+    // keeps the default viewport above, so every benchmark run samples exactly
+    // the region it sampled before and its metrics stay comparable.
+    double center_real = 0.0;
+    double center_imag = 0.0;
+    double span = 0.0;
     std::string ppm_path;
     std::string pgm_path;
     std::string raw_path;
@@ -45,13 +52,15 @@ struct TimingSummary {
 
 Options parse_arguments(int argc, char** argv);
 void print_usage(const char* program);
+Viewport centred_viewport(double center_real, double center_imag, double span,
+                          int width, int height);
 MandelbrotImage run_timed_repetitions(const Options& opts, TimingSummary& timing);
 TimingSummary summarise(std::vector<double> samples);
 double elapsed_seconds(std::chrono::steady_clock::time_point start);
 void print_metrics(const MandelbrotImage& img, const TimingSummary& timing);
 RunRecord build_run_record(const MandelbrotImage& img, const TimingSummary& timing,
                            const Options& opts);
-void print_build_configuration();
+void print_build_configuration(const Viewport& view);
 bool write_requested_outputs(const MandelbrotImage& img, const Options& opts);
 bool write_if_requested(bool (*writer)(const MandelbrotImage&, const std::string&),
                         const MandelbrotImage& img, const std::string& path);
@@ -76,7 +85,7 @@ int main(int argc, char** argv) {
     // ranks cooperated inside the kernel (block compute + gather) and now exit.
     int status = EXIT_SUCCESS;
     if (rank == 0) {
-        print_build_configuration();
+        print_build_configuration(opts.view);
         print_metrics(img, timing);
 
         if (!opts.row_stats_path.empty()) {
@@ -119,6 +128,12 @@ Options parse_arguments(int argc, char** argv) {
             std::sscanf(argv[++i], "%dx%d", &opts.width, &opts.height);
         } else if (std::strcmp(argv[i], "--repeat") == 0 && has_value) {
             opts.repetitions = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--center-re") == 0 && has_value) {
+            opts.center_real = std::atof(argv[++i]);
+        } else if (std::strcmp(argv[i], "--center-im") == 0 && has_value) {
+            opts.center_imag = std::atof(argv[++i]);
+        } else if (std::strcmp(argv[i], "--span") == 0 && has_value) {
+            opts.span = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "--csv") == 0 && has_value) {
             opts.csv_path = argv[++i];
         } else if (std::strcmp(argv[i], "--schedule") == 0 && has_value) {
@@ -140,6 +155,11 @@ Options parse_arguments(int argc, char** argv) {
             std::exit(EXIT_FAILURE);
         }
     }
+
+    if (opts.span > 0.0) {
+        opts.view = centred_viewport(opts.center_real, opts.center_imag, opts.span,
+                                     opts.width, opts.height);
+    }
     return opts;
 }
 
@@ -147,8 +167,19 @@ void print_usage(const char* program) {
     std::cerr << "usage: " << program
               << " [--width N] [--height N] [--resolution WxH] [--max-iter N]"
                  " [--repeat N] [--p N] [--nodes N] [--schedule NAME]"
+                 " [--center-re X] [--center-im Y] [--span S]"
                  " [--csv FILE] [--ppm FILE] [--pgm FILE] [--raw FILE]"
                  " [--row-stats FILE]\n";
+}
+
+// The imaginary half-extent follows the aspect ratio, so pixels stay square
+// (dx = dy) at every zoom level and the shapes are not stretched.
+Viewport centred_viewport(double center_real, double center_imag, double span,
+                          int width, int height) {
+    const double half_real = 0.5 * span;
+    const double half_imag = half_real * height / width;
+    return {center_real - half_real, center_real + half_real,
+            center_imag - half_imag, center_imag + half_imag};
 }
 
 // Timing excludes all I/O. The image of the last repetition is returned; every
@@ -196,9 +227,18 @@ double elapsed_seconds(std::chrono::steady_clock::time_point start) {
     return delta.count();
 }
 
-void print_build_configuration() {
+// The viewport is echoed because it is now a runtime choice: a zoomed run is
+// otherwise indistinguishable from a default one in the log.
+void print_build_configuration(const Viewport& view) {
     std::cout << "pruning        " << (pruning_enabled() ? "on" : "off") << "\n";
     std::cout << "symmetry       " << (symmetry_enabled() ? "on" : "off") << "\n";
+    // Deep zooms need far more digits than the default 6: at span 1e-6 the
+    // bounds would print identical.
+    const std::streamsize digits = std::cout.precision();
+    std::cout << std::setprecision(15);
+    std::cout << "viewport       [" << view.x_min << ", " << view.x_max << "] x ["
+              << view.y_min << ", " << view.y_max << "]\n";
+    std::cout.precision(digits);
 }
 
 // Throughput is derived from the escape-time array. It is an exact measure of
