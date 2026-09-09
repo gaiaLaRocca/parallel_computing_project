@@ -43,7 +43,8 @@ Paradigm kernel_paradigm();
 // Seconds spent in interprocess communication during the last
 // compute_mandelbrot call (MPI gather/scatter/messages). Only the MPI kernel
 // measures a non-zero value; the serial and OpenMP kernels return 0. The shared
-// driver divides it by T(p) to fill the MPI comm_fraction metric.
+// driver samples it after every repetition and keeps the fastest one's value,
+// which it divides by that same repetition's T(p) to fill comm_fraction.
 double kernel_comm_seconds();
 
 // Occupancy of the CUDA launch configuration: resident threads per SM over the
@@ -54,8 +55,9 @@ double kernel_occupancy();
 
 // Seconds of host<->device transfer during the last compute_mandelbrot call,
 // measured with CUDA events around the device->host copy of the escape-time
-// matrix. Only the CUDA kernel reports a non-zero value; the driver copies it
-// into the record's transfer_time field.
+// matrix. Only the CUDA kernel reports a non-zero value; like the comm time it
+// is sampled per repetition, and the record's transfer_time keeps the value of
+// the fastest one, the repetition T_min refers to.
 double kernel_transfer_seconds();
 
 // The CUDA launch block shape (blockDim.x, blockDim.y) actually used by the last

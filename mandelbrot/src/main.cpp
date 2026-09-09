@@ -44,10 +44,25 @@ struct Options {
     int nodes = 1;
 };
 
+// One timed repetition: the wall time of the compute region plus the side
+// metrics the kernel measured *inside that same execution*. They travel
+// together so a derived figure never mixes two different repetitions.
+struct Repetition {
+    double seconds;
+    double comm_seconds;      // MPI: time in gather/scatter/messages
+    double transfer_seconds;  // CUDA: host<->device copy
+};
+
 struct TimingSummary {
     double min;
     double median;
     double mean;
+    // Side metrics of the *fastest* repetition, i.e. of the run that produced
+    // `min`. T_min is the reported T(p), so pairing it with the comm time of a
+    // different repetition would make comm_fraction a ratio between two
+    // executions - small in absolute terms, but a quantity with no meaning.
+    double comm_at_min;
+    double transfer_at_min;
 };
 
 Options parse_arguments(int argc, char** argv);
@@ -55,7 +70,7 @@ void print_usage(const char* program);
 Viewport centred_viewport(double center_real, double center_imag, double span,
                           int width, int height);
 MandelbrotImage run_timed_repetitions(const Options& opts, TimingSummary& timing);
-TimingSummary summarise(std::vector<double> samples);
+TimingSummary summarise(std::vector<Repetition> samples);
 double elapsed_seconds(std::chrono::steady_clock::time_point start);
 void print_metrics(const MandelbrotImage& img, const TimingSummary& timing);
 RunRecord build_run_record(const MandelbrotImage& img, const TimingSummary& timing,
@@ -185,7 +200,7 @@ Viewport centred_viewport(double center_real, double center_imag, double span,
 // Timing excludes all I/O. The image of the last repetition is returned; every
 // repetition is deterministic, so which one we keep is irrelevant.
 MandelbrotImage run_timed_repetitions(const Options& opts, TimingSummary& timing) {
-    std::vector<double> samples;
+    std::vector<Repetition> samples;
     samples.reserve(opts.repetitions);
 
     MandelbrotImage img;
@@ -197,7 +212,10 @@ MandelbrotImage run_timed_repetitions(const Options& opts, TimingSummary& timing
 #endif
         const auto start = std::chrono::steady_clock::now();
         img = compute_mandelbrot(opts.view, opts.width, opts.height, opts.max_iter);
-        samples.push_back(elapsed_seconds(start));
+        // The kernel accessors report the call that has just returned, so they
+        // are sampled here, per repetition, and not once at the end.
+        samples.push_back({elapsed_seconds(start), kernel_comm_seconds(),
+                           kernel_transfer_seconds()});
     }
 
     timing = summarise(std::move(samples));
@@ -206,19 +224,26 @@ MandelbrotImage run_timed_repetitions(const Options& opts, TimingSummary& timing
 
 // The minimum is the least noisy estimator of the true compute time: system
 // noise can only add time, never remove it.
-TimingSummary summarise(std::vector<double> samples) {
-    std::sort(samples.begin(), samples.end());
+TimingSummary summarise(std::vector<Repetition> samples) {
+    std::sort(samples.begin(), samples.end(),
+              [](const Repetition& a, const Repetition& b) {
+                  return a.seconds < b.seconds;
+              });
 
     const std::size_t n = samples.size();
     const double median = (n % 2 == 1)
-                              ? samples[n / 2]
-                              : 0.5 * (samples[n / 2 - 1] + samples[n / 2]);
+                              ? samples[n / 2].seconds
+                              : 0.5 * (samples[n / 2 - 1].seconds + samples[n / 2].seconds);
 
     double sum = 0.0;
-    for (double s : samples) {
-        sum += s;
+    for (const Repetition& s : samples) {
+        sum += s.seconds;
     }
-    return {samples.front(), median, sum / n};
+    // front() is the fastest repetition after the sort: its side metrics are
+    // the ones that belong with the reported minimum.
+    const Repetition& fastest = samples.front();
+    return {fastest.seconds, median, sum / n, fastest.comm_seconds,
+            fastest.transfer_seconds};
 }
 
 double elapsed_seconds(std::chrono::steady_clock::time_point start) {
@@ -323,10 +348,10 @@ RunRecord build_run_record(const MandelbrotImage& img, const TimingSummary& timi
     }
 
     // Communication fraction is an MPI concept: time in gather/scatter/messages
-    // over T(p). kernel_comm_seconds() is the last call's comm time (0 for the
-    // other paradigms); timing.min is the reported T(p).
+    // over T(p). Numerator and denominator come from the same repetition - the
+    // fastest one - so the ratio describes one execution rather than two.
     if (paradigm == Paradigm::MPI && timing.min > 0.0) {
-        r.comm_fraction = kernel_comm_seconds() / timing.min;
+        r.comm_fraction = timing.comm_at_min / timing.min;
     }
 
     // The GPU-only columns: the divergence proxy comes from the matrix (shared
@@ -337,7 +362,7 @@ RunRecord build_run_record(const MandelbrotImage& img, const TimingSummary& timi
         r.warp_divergence =
             warp_divergence_proxy_blocked(img, kernel_block_x(), kernel_block_y());
         r.occupancy = kernel_occupancy();
-        r.transfer_time = kernel_transfer_seconds();
+        r.transfer_time = timing.transfer_at_min;
     }
 
     r.checksum = checksum(img);
