@@ -63,22 +63,43 @@ REPEAT=5
 JOB=$SLURM_JOB_ID
 NODES=$SLURM_JOB_NUM_NODES
 
-# Pin ranks to cores and fill socket 0 before touching socket 1 (gnode01 is
-# 2 sockets x 32 cores). This is the MPI analogue of the OpenMP sweep's
-# OMP_PROC_BIND=close: without it SLURM may spread ranks over both sockets even
-# for np=2, and the small-np points would carry a cross-socket penalty the large
-# ones do not, bending the speedup curve for a reason that has nothing to do
-# with the decomposition. Only the np=33 master-worker point spills one rank
-# onto socket 1, unavoidably - 32 workers plus a master exceed one socket.
-# NB: "block" here is rank->core placement, unrelated to the row->rank
-# decomposition also called "block".
-LAUNCH="srun --kill-on-bad-exit=1 --cpu-bind=cores --distribution=block:block"
+# Launch with mpirun, NOT srun. This OpenMPI cannot be direct-launched by srun:
+# its PMIx client (the ext3x shim of OMPI 4.1.6) cannot reach the PMIx v5 server
+# this SLURM exposes, and every rank dies in MPI_Init with
+#   OPAL ERROR: Unreachable in file ext3x_client.c at line 111
+#   "the application appears to have been direct launched using srun, but OMPI
+#    was not built with SLURM's PMI support"
+# (verified interactively on gnode01, 2026-09-09; `srun --mpi=list` does show
+# pmix_v5, so SLURM's side is not the problem - the two PMIx versions are).
+# mpirun reads the allocation from the SLURM_* environment, starts its own
+# daemons on the allocated node and bootstraps the ranks with OMPI's internal
+# PMIx, so the handshake stays inside one MPI stack.
+#
+#   --map-by core --bind-to core : one rank per core, assigned in order, so the
+#       ranks fill socket 0 before touching socket 1 (gnode01 is 2 sockets x 32
+#       cores). This is the MPI analogue of the OpenMP sweep's OMP_PROC_BIND=
+#       close: unpinned, the runtime may spread ranks over both sockets even for
+#       np=2, and the small-np points would carry a cross-socket penalty the
+#       large ones do not, bending the speedup curve for a reason that has
+#       nothing to do with the decomposition. Only the np=33 master-worker point
+#       spills one rank onto socket 1, unavoidably - 32 workers plus a master
+#       exceed one socket. NB: "core" here is rank->core placement, unrelated to
+#       the row->rank decomposition called "block" below.
+#   -x MPI_DECOMP : mpirun forwards only OMPI_* variables by default (srun
+#       exported the whole environment), and the kernel reads its decomposition
+#       from MPI_DECOMP, so it must be listed explicitly. Without it every run
+#       would silently fall back to the default scheme.
+# A rank that aborts takes the whole mpirun down with a non-zero status, which
+# `set -e` turns into a failed job - the same fail-fast the srun launcher got
+# from --kill-on-bad-exit=1.
+LAUNCH="mpirun --map-by core --bind-to core -x MPI_DECOMP"
 
 # --- T(1): true serial baseline on this partition ---------------------------
 # One rank of the same allocation: same hardware as the parallel points, as
 # required for valid speedups - and, since the OpenMP sweep measures its own
 # T(1) the same way on the same node, the two paradigms' speedups are on a
-# common footing.
+# common footing. This one keeps srun: the serial binary never calls MPI_Init,
+# so it needs no PMI bootstrap and the incompatibility above does not apply.
 srun -N 1 -n 1 ./mandelbrot \
     --resolution "$RES" --max-iter "$ITER" --repeat "$REPEAT" \
     --p 1 --nodes 1 --schedule - \
@@ -89,8 +110,8 @@ srun -N 1 -n 1 ./mandelbrot \
 #          land on few ranks), minimal communication (one gather).
 # cyclic : row r -> rank r mod P - near-balanced by construction, still static
 #          and still one gather; the hypothesised winner.
-# One binary, scheme picked at runtime by MPI_DECOMP (sbatch exports it to the
-# ranks); the --schedule label just tags the CSV row.
+# One binary, scheme picked at runtime by MPI_DECOMP (exported here, forwarded
+# to the ranks by mpirun's -x); the --schedule label just tags the CSV row.
 for DECOMP in block cyclic; do
     export MPI_DECOMP=$DECOMP
     for NP in 2 4 8 16 32; do
