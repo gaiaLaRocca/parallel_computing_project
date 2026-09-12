@@ -1,0 +1,19 @@
+# job 34335  (Sweep A, REPEAT=30)
+34335            mandel_cuda_blocks  COMPLETED   00:00:29      0:0         gnode01 
+34335.batch                   batch  COMPLETED   00:00:29      0:0         gnode01 
+g++ (GCC) 8.5.0 20210514 (Red Hat 8.5.0-20)
+GPU 0: NVIDIA L40S (UUID: GPU-43467187-deba-965a-e92f-3497445fe08a)
+NVIDIA L40S, 46068 MiB, 8.9
+==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM
+registri/thread: 22
+block     T_min[ms]    GFLOP/s    div_block     div_scat   wasted             checksum
+256x1         5.776    359.657   10215.0997  131049.8777   0.1124     7fba3b93a2fa2397
+512x1         5.988    346.893   10215.0997  131049.8777   0.1124     7fba3b93a2fa2397
+128x1         5.690    365.064   10215.0997  131049.8777   0.1124     7fba3b93a2fa2397
+128x2         5.957    348.709   10215.0997  131049.8777   0.1124     7fba3b93a2fa2397
+64x4          6.091    341.015   10215.0997  131049.8777   0.1124     7fba3b93a2fa2397
+32x8          6.086    341.312   10215.0997  131049.8777   0.1124     7fba3b93a2fa2397
+16x16         5.860    354.457    5932.1864  131049.8777   0.0782     7fba3b93a2fa2397
+8x32          5.752    361.164    3688.6232  131049.8777   0.0623     7fba3b93a2fa2397
+1x256         5.631    368.873    9549.6569  131049.8777   0.1175     7fba3b93a2fa2397
+256x1         8.222    252.657   10215.0997  131049.8777   0.1124     7fba3b93a2fa2397
