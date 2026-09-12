@@ -60,3 +60,9 @@ CLAUDE.md
 # profiles, but versioned like merged.csv: it is the prediction the measured
 # parallel curves are judged against, so it belongs to the record.
 !mandelbrot/data/block_imbalance.csv
+# Distilled job-log notes. job_logs/ stays ignored (bulky, mostly build noise),
+# but a few CUDA figures live ONLY in the log and in no CSV: warp_div_scat, the
+# wasted-lane fraction, registers/thread from -Xptxas -v, the GPU UUID and the
+# ncu counter-permission error. Extract them per job into
+# data/cuda_log_notes_<jobid>.txt so the report's sources survive the cluster.
+!mandelbrot/data/cuda_log_notes_*.txt

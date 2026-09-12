@@ -69,7 +69,15 @@ make mandelbrot mandelbrot_cuda NVARCH=-arch=native
 DATA="$SLURM_SUBMIT_DIR/mandelbrot/data"
 RES=1024x1024
 ITER=1000
-REPEAT=10                                 # kernel is fast; more repeats denoise T
+REPEAT=30                                 # kernel is fast; more repeats denoise T.
+                                          # 10 was not enough: in job 34334 the six
+                                          # shapes that are *theoretically identical*
+                                          # (blockDim.x a multiple of 32 => same warp
+                                          # geometry, same divergence proxy, same
+                                          # occupancy) still spread 7.6% in T_min,
+                                          # swamping the 3.4% gap that separated the
+                                          # nominal winner from 256x1. The ranking
+                                          # cannot be read below that noise floor.
 JOB=$SLURM_JOB_ID
 
 # --- T(1): serial baseline on THIS node ------------------------------------
