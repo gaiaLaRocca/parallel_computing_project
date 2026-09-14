@@ -43,6 +43,8 @@ __pycache__/
 .DS_Store
 
 # --- Local-only files (never pushed) ----------------------------------------
+# Internal coding and commit conventions, kept locally.
+docs/
 # CLAUDE.md is kept locally as Claude Code's operational guide, not versioned.
 CLAUDE.md
 
@@ -71,3 +73,12 @@ CLAUDE.md
 # ncu counter-permission error. Extract them per job into
 # data/cuda_log_notes_<jobid>.txt so the report's sources survive the cluster.
 !mandelbrot/data/cuda_log_notes_*.txt
+
+# --- LaTeX report -----------------------------------------------------------
+# Build output of the report: auxiliary files and the working PDF. The final PDF
+# is copied to latex_report/report.pdf, which is versioned.
+out/
+latex_report/_minted-main/
+# The report's figures include PNGs, which *.png above would ignore: without
+# them the LaTeX sources would not compile from a clone.
+!latex_report/**/*.png
