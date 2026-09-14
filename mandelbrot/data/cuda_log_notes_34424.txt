@@ -1,0 +1,18 @@
+# job 34424  (Sweep B, block 256x1, REPEAT_GPU=30, REPEAT_CPU=3)
+34424           mandel_cuda_scaling  COMPLETED   00:01:44      0:0         gnode01 
+34424.batch                   batch  COMPLETED   00:01:44      0:0         gnode01 
+g++ (GCC) 8.5.0 20210514 (Red Hat 8.5.0-20)
+Build cuda_12.3.r12.3/compiler.33567101_0
+GPU 0: NVIDIA L40S (UUID: GPU-a554e585-e4d4-186d-a0a1-b81a6e3a26ea)
+NVIDIA L40S, 46068 MiB, 8.9
+numa: gpu 0000:01:00.0 local_cpulist=0-31 numa_node=0
+numa: physcpubind: 42 
+numa: nodebind: 1 
+registri/thread: 22
+config            T_min[ms]    GFLOP/s    div_block       div_scat   wasted             checksum
+512x512/1000          2.565    202.471   18012.3800    131059.6630   0.1654     fb14e831a363787f
+1024x1024/1000        5.735    362.190   10215.0997    131049.8777   0.1124     7fba3b93a2fa2397
+2048x2048/1000       19.131    434.283    5835.3181    131069.4235   0.0759     c44a8b5d6e1fe18b
+4096x4096/1000       75.705    438.979    3154.4982    131064.7171   0.0525     ed083ccd4b5c0e33
+2048x2048/500        10.446    406.854    1330.5178     32331.4987   0.0742     943eefcc3081cd0f
+2048x2048/5000       87.474    465.201  165109.7200   3319480.5605   0.0776     5a5b1e7701fa12cf
