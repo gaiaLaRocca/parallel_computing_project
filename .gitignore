@@ -60,6 +60,11 @@ CLAUDE.md
 # profiles, but versioned like merged.csv: it is the prediction the measured
 # parallel curves are judged against, so it belongs to the record.
 !mandelbrot/data/block_imbalance.csv
+# Predicted warp statistics per CUDA block geometry from block_geometry.py.
+# Derived from a bare-kernel --raw dump, which stays ignored (4 MiB binary and
+# regenerable); the table is versioned because the measured Sweep A times are
+# judged against it.
+!mandelbrot/data/block_geometry.csv
 # Distilled job-log notes. job_logs/ stays ignored (bulky, mostly build noise),
 # but a few CUDA figures live ONLY in the log and in no CSV: warp_div_scat, the
 # wasted-lane fraction, registers/thread from -Xptxas -v, the GPU UUID and the
