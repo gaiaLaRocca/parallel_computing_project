@@ -1,579 +1,445 @@
 #!/usr/bin/env python3
-"""Generate the analysis figures from the merged dataset (and a row profile).
+"""Render the report's figures from the per-job results.
 
-Reads the canonical ``merged.csv`` produced by ``merge_metrics.py`` and renders
-the figures that carry the study's argument, in three groups:
+Each figure answers one question the report asks, so the set is deliberately
+small:
 
-Scalability (the load-bearing plots, all paradigms overlaid)
-  * speedup     S(p) vs p, with the dashed ideal S = p as the reference the eye
-                needs to judge whether a curve is good or poor;
-  * efficiency  E(p) vs p, the same information normalised (starts at 1, falls);
-  * Karp-Flatt  e(p) vs p, the thesis plot: a *rising* e(p) is the visual proof
-                that the shortfall is overhead (imbalance/communication), not the
-                serial fraction.
+  row_profile                per-row work w_r of the serial baseline: the
+                             "mountain" of contiguous expensive rows behind every
+                             imbalance result.
+  cpu_predicted_vs_measured  measured OpenMP and MPI speedup against the bound
+                             p / lambda_p predicted from the serial profile, one
+                             colour per assignment rule: the model is judged by
+                             rule, not by paradigm.
+  openmp_schedules           speedup of the five OpenMP policies: the fivefold
+                             spread at 32 threads and the fixed ceiling of
+                             dynamic,64.
+  cuda_saturation            effective GPU throughput against image size
+                             (Sweep B1): the card saturates from about four
+                             million pixels.
+  cuda_copy_bandwidth        effective device->host bandwidth against copy size,
+                             with the least-squares fit (fixed cost per copy plus
+                             asymptotic bandwidth) and the nominal PCIe rate.
 
-Per-paradigm (the mechanism)
-  * OpenMP: static/dynamic/guided speedup on one axis (does dynamic recover the
-            imbalance CoV predicted?);
-  * MPI:    stacked compute-vs-communication time per rank count, per strategy,
-            plus block/cyclic/master-worker speedup;
-  * CUDA:   effective GFLOP/s vs theoretical peak, and throughput vs the warp-
-            divergence proxy (the same irregularity, in SIMT clothing).
+The CPU figures read merged.csv at the reference problem (1024x1024, max_iter
+1000). The CUDA figures read the per-job file of the problem-scaling sweep
+directly: merged.csv carries no job id, and Sweep A also measured 256x1 at
+1024x1024, so the scaling points cannot be told apart there.
 
-Baseline (level 1, deterministic, logically first)
-  * the per-row work profile w_r vs r — the "mountain" that makes lambda and CoV
-    visible; and serial cost T(1) vs problem size and vs max_iter;
-  * the decomposition bound S <= P/lambda(P) for block/cyclic/dynamic, computed
-    from that same w_r by block_imbalance.py. Purely predictive — it exists
-    before any MPI run, so the measured curves can be judged against it.
+Colours come from a validated categorical palette in fixed slot order and follow
+the entity: an assignment rule keeps its hue in every figure it appears in.
+Labels stay in English like the rest of the repository.
 
-The p axis is log2 (powers of two would otherwise crowd the high end). Colours
-follow a fixed, colourblind-checked categorical palette assigned per entity (not
-per rank), with distinct markers as a second channel for print/CVD.
+Needs matplotlib; everything else is the standard library.
 """
 
 import argparse
 import csv
 import glob
 import os
+import re
 import sys
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.ticker import FuncFormatter, NullLocator
 
-# --- Palette (validated categorical set, light surface) ---------------------
-BLUE, AQUA, YELLOW, GREEN = "#2a78d6", "#1baf7a", "#eda100", "#008300"
-VIOLET, RED, MAGENTA, ORANGE = "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"
-SURFACE, INK, INK2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#898781"
-GRID, AXIS = "#e1e0d9", "#c3c2b7"
+REFERENCE_RESOLUTION = "1024x1024"
+REFERENCE_MAX_ITER = "1000"
+PCIE4_X16_GBPS = 31.5  # nominal per direction: 16 GT/s x 16 lanes, 128b/130b
+SCALING_MAX_ITER = "1000"  # Sweep B1 varies the resolution at this N_max
 
-# Colour + marker per entity (paradigm, schedule). Colour follows the entity, so
-# a series keeps its identity across every figure it appears in.
-STYLE = {
-    ("openmp", "static"):        (BLUE, "o"),
-    ("openmp", "dynamic"):       (GREEN, "s"),
-    ("openmp", "guided"):        (VIOLET, "^"),
-    ("mpi", "block"):            (RED, "D"),
-    ("mpi", "cyclic"):           (ORANGE, "v"),
-    ("mpi", "master_worker"):    (MAGENTA, "P"),
-    ("cuda", "-"):               (AQUA, "X"),
-    ("serial", "-"):             (MUTED, "."),
+# Validated categorical palette (dataviz reference), slots in fixed order.
+SLOT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+        "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+INK, INK_SECONDARY, MUTED = "#0b0b0b", "#52514e", "#898781"
+GRID, AXIS, SURFACE = "#e1e0d9", "#c3c2b7", "#ffffff"
+
+RULE_COLOR = {"block": SLOT[0], "cyclic": SLOT[1], "dynamic": SLOT[2]}
+RULE_REALISATIONS = {
+    "block": [("openmp", "static"), ("mpi", "block")],
+    "cyclic": [("mpi", "cyclic")],
+    "dynamic": [("openmp", "dynamic_1"), ("mpi", "dynamic")],
 }
-ENTITY_ORDER = list(STYLE.keys())
-FALLBACK_COLORS = [YELLOW, MAGENTA, AQUA, ORANGE, VIOLET]
-SEQUENCE_COLORS = [BLUE, ORANGE, GREEN, VIOLET, RED, AQUA]
+# (schedule in merged.csv, label, colour, marker). static and dynamic,1 share the
+# colour of the rule they realise, so the two CPU figures read as one story.
+OPENMP_POLICIES = [
+    ("static", "static", RULE_COLOR["block"], "o"),
+    ("dynamic_1", "dynamic,1", RULE_COLOR["dynamic"], "s"),
+    ("dynamic_16", "dynamic,16", SLOT[3], "^"),
+    ("dynamic_64", "dynamic,64", SLOT[4], "D"),
+    ("guided", "guided", SLOT[5], "v"),
+]
+GPU_COLOR = SLOT[6]
+
+RUN_FILE = re.compile(r"run_(\d+)\.csv$")
 
 
 def main(argv=None):
     args = parse_args(argv)
-    setup_style()
+    apply_style()
 
-    made, skipped = [], []
+    reference_rows = [row for row in read_rows(args.merged) if is_reference_problem(row)]
+    scaling_run = args.scaling_run or find_scaling_run(args.data_dir)
+    scaling_rows = [row for row in read_rows(scaling_run) if row.get("paradigm") == "cuda"]
 
-    def record(name, ok):
-        (made if ok else skipped).append(name)
+    figures = {
+        "row_profile": lambda: plot_row_profile(read_row_profile(args.row_profile)),
+        "cpu_predicted_vs_measured": lambda: plot_predicted_vs_measured(
+            read_bounds(args.block_imbalance), reference_rows),
+        "openmp_schedules": lambda: plot_openmp_schedules(reference_rows),
+        "cuda_saturation": lambda: plot_cuda_saturation(scaling_rows),
+        "cuda_copy_bandwidth": lambda: plot_copy_bandwidth(scaling_rows),
+    }
+    written = []
+    for name, draw in figures.items():
+        fig = draw()
+        if fig is None:
+            print("skipped {}: no data".format(name), file=sys.stderr)
+            continue
+        save_figure(fig, args.outdir, name, args.formats)
+        written.append(name)
 
-    rows = load_merged_rows(args.merged)
-    if rows:
-        groups = group_series(rows, "speedup")
-        record("speedup", draw_speedup(groups, "Strong-scaling speedup",
-                                       "speedup", args.outdir, args.formats))
-        record("efficiency", plot_efficiency(rows, args.outdir, args.formats))
-        record("karp_flatt", plot_karp_flatt(rows, args.outdir, args.formats))
-        record("openmp_scheduling",
-               draw_speedup(group_series(rows, "speedup", lambda k: k[0] == "openmp"),
-                            "OpenMP scheduling comparison",
-                            "openmp_scheduling", args.outdir, args.formats))
-        record("mpi_time", plot_mpi_time_decomposition(rows, args.outdir, args.formats))
-        record("mpi_strategies",
-               draw_speedup(group_series(rows, "speedup", lambda k: k[0] == "mpi"),
-                            "MPI decomposition strategies",
-                            "mpi_strategies", args.outdir, args.formats))
-        record("cuda_throughput",
-               plot_cuda_throughput(rows, args.outdir, args.formats, args.gpu_peak_gflops))
-        record("cuda_divergence", plot_cuda_divergence(rows, args.outdir, args.formats))
-        record("baseline_growth", plot_baseline_growth(rows, args.outdir, args.formats))
-    elif args.merged:
-        print("warning: no rows in {}".format(args.merged), file=sys.stderr)
-
-    record("block_imbalance",
-           plot_block_imbalance(args.block_imbalance, args.outdir, args.formats))
-
-    if args.row_stats:
-        for path in sorted(glob.glob(args.row_stats)):
-            name = "row_profile:" + os.path.basename(path)
-            record(name, plot_row_profile(path, args.outdir, args.formats))
-
-    print("figures written to {}: {}".format(args.outdir, ", ".join(made) or "none"),
+    print("scaling run: {}".format(scaling_run or "none found"), file=sys.stderr)
+    print("wrote {} to {}".format(", ".join(written) or "nothing", args.outdir),
           file=sys.stderr)
-    if skipped:
-        print("skipped (no data): {}".format(", ".join(skipped)), file=sys.stderr)
-    return 0 if made else 1
+    return 0 if written else 1
 
 
-def parse_args(argv):
-    here = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.normpath(os.path.join(here, os.pardir, "data"))
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--merged", default=os.path.join(data_dir, "merged.csv"),
-                        help="merged dataset from merge_metrics.py (default: %(default)s)")
-    parser.add_argument("--block-imbalance",
-                        default=os.path.join(data_dir, "block_imbalance.csv"),
-                        help="prediction table from block_imbalance.py, drawn as the "
-                             "decomposition bound (default: %(default)s)")
-    parser.add_argument("--row-stats", default=None,
-                        help="path or glob of a --row-stats CSV (row,iterations) for "
-                             "the per-row load profile")
-    parser.add_argument("--outdir", default=os.path.join(data_dir, "plots"),
-                        help="output directory for figures (default: %(default)s)")
-    parser.add_argument("--format", dest="formats", default="pdf,png",
-                        help="comma-separated output formats (default: %(default)s)")
-    parser.add_argument("--gpu-peak-gflops", type=float, default=None,
-                        help="GPU theoretical peak, drawn as a reference on the "
-                             "CUDA throughput plot")
-    args = parser.parse_args(argv)
-    args.formats = [f.strip() for f in args.formats.split(",") if f.strip()]
-    return args
-
-
-def setup_style():
-    matplotlib.rcParams.update({
-        "figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
-        "savefig.facecolor": SURFACE,
-        "font.size": 11, "axes.titlesize": 13, "axes.titleweight": "bold",
-        "axes.labelcolor": INK, "text.color": INK,
-        "xtick.color": INK2, "ytick.color": INK2,
-        "axes.edgecolor": AXIS, "legend.fontsize": 10,
-    })
-
-
-def load_merged_rows(path):
-    if not path or not os.path.exists(path):
-        return []
-    with open(path, newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def group_series(rows, value_col, keep=None):
-    """Return {(paradigm, schedule): [(p, value), ...] sorted} for present values."""
-    groups = {}
-    for row in rows:
-        key = (row.get("paradigm", ""), row.get("schedule", ""))
-        if keep is not None and not keep(key):
-            continue
-        p = to_int(row.get("p"))
-        value = to_float(row.get(value_col))
-        if p is None or value is None:
-            continue
-        groups.setdefault(key, []).append((p, value))
-    for key in groups:
-        groups[key].sort()
-    return groups
-
-
-def to_int(value):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+def plot_row_profile(profile):
+    """Per-row work, with the mean and the peak row labelled directly."""
+    if not profile:
         return None
+    rows = [row for row, _ in profile]
+    work = [iterations for _, iterations in profile]
+    mean = sum(work) / len(work)
+    peak_row, peak = max(profile, key=lambda item: item[1])
+
+    fig, ax = new_axes()
+    ax.fill_between(rows, work, color=SLOT[0], alpha=0.10, linewidth=0)
+    ax.plot(rows, work, color=SLOT[0], linewidth=2)
+    ax.axhline(mean, color=MUTED, linewidth=1, linestyle=(0, (4, 3)))
+    ax.text(rows[-1], mean, "mean  {:,.0f}".format(mean), color=INK_SECONDARY,
+            ha="right", va="bottom", fontsize=9)
+    draw_point(ax, peak_row, peak, SLOT[0])
+    ax.annotate("peak row {}: {:.2f}$\\times$ mean".format(peak_row, peak / mean),
+                (peak_row, peak), xytext=(10, 0), textcoords="offset points",
+                color=INK_SECONDARY, va="center", fontsize=9)
+
+    ax.set_xlim(0, rows[-1])
+    ax.set_ylim(0, peak * 1.12)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: "{:,.0f}".format(value)))
+    ax.set_xlabel("row index  r")
+    ax.set_ylabel("iterations per row  $w_r$")
+    return fig
 
 
-def to_float(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
+def plot_predicted_vs_measured(bounds, rows):
+    """One panel per assignment rule: predicted bound as a line, measurements as markers.
+
+    Small multiples rather than one plot: the cyclic and dynamic bounds coincide
+    within 1% and would hide each other on a shared axis.
+    """
+    if not bounds:
         return None
+    all_p = sorted({p for points in bounds.values() for p, _ in points})
+    fig, axes = plt.subplots(1, len(RULE_COLOR), figsize=(6.8, 2.9), sharey=True)
+    for ax, (rule, color) in zip(axes, RULE_COLOR.items()):
+        style_axes(ax)
+        draw_ideal(ax, all_p)
+        predicted = sorted(bounds.get(rule, []))
+        ax.plot([p for p, _ in predicted], [s for _, s in predicted],
+                color=color, linewidth=2, zorder=2)
+        for paradigm, schedule in RULE_REALISATIONS[rule]:
+            draw_markers(ax, series(rows, paradigm, schedule, "speedup"), color, paradigm)
+        set_log2_axes(ax, all_p)
+        ax.set_title(rule, color=INK_SECONDARY, fontsize=10)
+        ax.set_xlabel("processing units  p")
+    axes[0].set_ylabel("speedup  S(p)")
+    fig.legend(handles=encoding_handles(), loc="lower center", ncol=4,
+               bbox_to_anchor=(0.5, -0.08))
+    fig.tight_layout()
+    return fig
 
 
-def draw_speedup(groups, title, name, outdir, formats):
-    """Overlay a speedup curve per series with the dashed ideal S = p reference."""
-    if not groups:
-        return False
+def plot_openmp_schedules(rows):
+    """Speedup of every OpenMP policy against the ideal S = p."""
     fig, ax = new_axes()
     all_p = set()
-    for key in ordered_keys(groups):
-        xs = [p for p, _ in groups[key]]
-        ys = [v for _, v in groups[key]]
-        all_p.update(xs)
-        color, marker = series_style(key)
-        ax.plot(xs, ys, marker=marker, color=color, label=series_label(key),
-                linewidth=2, markersize=7, markeredgecolor=SURFACE, markeredgewidth=0.8)
+    for schedule, label, color, marker in OPENMP_POLICIES:
+        points = series(rows, "openmp", schedule, "speedup")
+        if not points:
+            continue
+        all_p.update(p for p, _ in points)
+        ax.plot([p for p, _ in points], [s for _, s in points], color=color,
+                linewidth=2, marker=marker, markersize=8, markeredgecolor=SURFACE,
+                markeredgewidth=1.5, label=label, zorder=3)
+    if not all_p:
+        plt.close(fig)
+        return None
 
-    p_ticks = sorted(all_p)
-    ax.plot(p_ticks, p_ticks, linestyle="--", color=MUTED, linewidth=1.5,
-            label=r"ideal  $S = p$", zorder=1)
-    set_log2_p_axis(ax, p_ticks)
-    ax.set_xlabel(r"processes / threads  $p$")
-    ax.set_ylabel(r"speedup  $S(p)$")
-    ax.set_title(title)
-    ax.legend(frameon=False)
-    save_figure(fig, outdir, name, formats)
-    return True
+    draw_ideal(ax, sorted(all_p))
+    set_log2_axes(ax, sorted(all_p))
+    ax.set_xlabel("threads  p")
+    ax.set_ylabel("speedup  S(p)")
+    ax.legend(title="OpenMP schedule", loc="upper left")
+    return fig
 
 
-def new_axes(width=6.4, height=4.2):
+def plot_cuda_saturation(rows):
+    """Effective GPU throughput against image size, endpoints labelled."""
+    points = sorted((pixels(row), float(row["gflops"])) for row in rows
+                    if row.get("max_iter") == SCALING_MAX_ITER)
+    if len({size for size, _ in points}) < 2:
+        return None
+
+    fig, ax = new_axes()
+    sizes = [size for size, _ in points]
+    throughput = [value for _, value in points]
+    ax.plot(sizes, throughput, color=GPU_COLOR, linewidth=2, zorder=2)
+    for size, value in points:
+        draw_point(ax, size, value, GPU_COLOR)
+    # The first point sits where the line rises, so its label goes below it.
+    for (size, value), offset, va in ((points[0], -12, "top"), (points[-1], 10, "bottom")):
+        ax.annotate("{:.0f} GFLOP/s".format(value), (size, value), xytext=(0, offset),
+                    textcoords="offset points", ha="center", va=va,
+                    color=INK_SECONDARY, fontsize=9)
+
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(sizes)
+    ax.set_xticklabels(["{0}$\\times${0}".format(int(round(size ** 0.5))) for size in sizes])
+    ax.minorticks_off()
+    ax.set_xlim(sizes[0] / 1.6, sizes[-1] * 1.6)
+    ax.set_ylim(0, max(throughput) * 1.18)
+    ax.set_xlabel("image size (pixels, log scale)")
+    ax.set_ylabel("effective throughput  [GFLOP/s]")
+    return fig
+
+
+def plot_copy_bandwidth(rows):
+    """Measured copy bandwidth, the fitted model and the nominal PCIe rate."""
+    copies = sorted((pixels(row) * 4, float(row["transfer_time"])) for row in rows
+                    if row.get("transfer_time"))
+    if len({size for size, _ in copies}) < 2:
+        return None
+    fixed_seconds, seconds_per_byte = fit_line(copies)
+
+    fig, ax = new_axes()
+    mib = 1024 ** 2
+    smallest, largest = copies[0][0], copies[-1][0]
+    curve = [smallest / 1.5 * (largest * 2.25 / smallest) ** (i / 99) for i in range(100)]
+    ax.plot([size / mib for size in curve],
+            [size / (fixed_seconds + seconds_per_byte * size) / 1e9 for size in curve],
+            color=GPU_COLOR, linewidth=2, zorder=2)
+    for size, seconds in copies:
+        draw_point(ax, size / mib, size / seconds / 1e9, GPU_COLOR)
+    ax.axhline(PCIE4_X16_GBPS, color=MUTED, linewidth=1, linestyle=(0, (4, 3)))
+
+    ax.set_xscale("log", base=2)
+    sizes_mib = sorted({size / mib for size, _ in copies})
+    ax.set_xticks(sizes_mib)
+    ax.set_xticklabels(["{:g}".format(size) for size in sizes_mib])
+    ax.minorticks_off()
+    ax.set_xlim(curve[0] / mib, curve[-1] / mib)
+    ax.set_ylim(0, PCIE4_X16_GBPS * 1.15)
+    ax.text(curve[0] / mib * 1.1, PCIE4_X16_GBPS, "nominal PCIe 4.0 x16",
+            color=INK_SECONDARY, va="bottom", fontsize=9)
+    ax.text(curve[-1] / mib / 1.1, 1 / seconds_per_byte / 1e9 * 0.62,
+            "fit: {:.1f} GB/s asymptote,\n{:.2f} ms fixed cost per copy".format(
+                1 / seconds_per_byte / 1e9, fixed_seconds * 1e3),
+            color=INK_SECONDARY, ha="right", va="top", fontsize=9)
+    ax.set_xlabel("copy size  [MiB, log scale]")
+    ax.set_ylabel("effective bandwidth  [GB/s]")
+    return fig
+
+
+def draw_ideal(ax, all_p):
+    ax.plot(all_p, all_p, color=AXIS, linewidth=1, zorder=1, label="ideal  S = p")
+
+
+def draw_markers(ax, points, color, paradigm):
+    """OpenMP as an open ring, MPI as a small filled square that stays visible inside it.
+
+    The two paradigms agree within about 1% on most points, so the marks must be
+    readable while sitting on top of each other.
+    """
+    if not points:
+        return
+    xs = [p for p, _ in points]
+    ys = [s for _, s in points]
+    if paradigm == "mpi":
+        ax.plot(xs, ys, linestyle="none", marker="s", markersize=5, color=color, zorder=4)
+    else:
+        ax.plot(xs, ys, linestyle="none", marker="o", markersize=11, markerfacecolor="none",
+                markeredgecolor=color, markeredgewidth=1.8, zorder=3)
+
+
+def encoding_handles():
+    return [
+        Line2D([], [], color=AXIS, linewidth=1, label="ideal  S = p"),
+        Line2D([], [], color=INK_SECONDARY, linewidth=2, label="predicted  p / $\\lambda_p$"),
+        Line2D([], [], linestyle="none", marker="o", markersize=11, markerfacecolor="none",
+               markeredgecolor=INK_SECONDARY, markeredgewidth=1.8, label="OpenMP measured"),
+        Line2D([], [], linestyle="none", marker="s", markersize=5,
+               color=INK_SECONDARY, label="MPI measured"),
+    ]
+
+
+def draw_point(ax, x, y, color):
+    ax.plot([x], [y], marker="o", markersize=8, color=color, markeredgecolor=SURFACE,
+            markeredgewidth=2, linestyle="none", zorder=3)
+
+
+def set_log2_axes(ax, ticks):
+    """Log2 scale on both axes, one plain tick per value: S = p is then a diagonal."""
+    for axis, set_scale in ((ax.xaxis, ax.set_xscale), (ax.yaxis, ax.set_yscale)):
+        set_scale("log", base=2)
+        axis.set_ticks(ticks)
+        axis.set_ticklabels([str(tick) for tick in ticks])
+        axis.set_minor_locator(NullLocator())
+
+
+def new_axes(width=6.4, height=3.6):
     fig, ax = plt.subplots(figsize=(width, height))
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.grid(True, axis="y", color=GRID, linewidth=0.8)
-    ax.set_axisbelow(True)
+    style_axes(ax)
     return fig, ax
 
 
-def ordered_keys(groups):
-    def rank(key):
-        return ENTITY_ORDER.index(key) if key in ENTITY_ORDER else len(ENTITY_ORDER)
-    return sorted(groups, key=lambda key: (rank(key), key))
+def style_axes(ax):
+    """Recessive chrome: no top/right spines, hairline axes and horizontal grid."""
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(AXIS)
+        ax.spines[side].set_linewidth(1)
+    ax.grid(True, axis="y", color=GRID, linewidth=1)
+    ax.set_axisbelow(True)
 
 
-def series_style(key):
-    if key in STYLE:
-        return STYLE[key]
-    idx = len(series_style.assigned)
-    series_style.assigned.setdefault(key, FALLBACK_COLORS[idx % len(FALLBACK_COLORS)])
-    return (series_style.assigned[key], "o")
-
-
-series_style.assigned = {}
-
-
-def series_label(key):
-    names = {"openmp": "OpenMP", "mpi": "MPI", "cuda": "CUDA",
-             "serial": "Serial", "hybrid": "Hybrid"}
-    paradigm, schedule = key
-    base = names.get(paradigm, paradigm)
-    if schedule and schedule != "-":
-        return "{} ({})".format(base, schedule)
-    return base
-
-
-def set_log2_p_axis(ax, p_ticks):
-    if len(p_ticks) > 1:
-        ax.set_xscale("log", base=2)
-    ax.set_xticks(p_ticks)
-    ax.set_xticklabels([str(p) for p in p_ticks])
-    ax.minorticks_off()
+def apply_style():
+    matplotlib.rcParams.update({
+        "figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
+        "savefig.facecolor": SURFACE, "font.size": 10,
+        "axes.labelcolor": INK_SECONDARY, "text.color": INK,
+        "xtick.color": AXIS, "ytick.color": AXIS,
+        "xtick.labelcolor": INK_SECONDARY, "ytick.labelcolor": INK_SECONDARY,
+        "legend.frameon": False, "legend.fontsize": 9, "legend.title_fontsize": 9,
+        "lines.solid_capstyle": "round", "lines.solid_joinstyle": "round",
+    })
 
 
 def save_figure(fig, outdir, name, formats):
     os.makedirs(outdir, exist_ok=True)
     for fmt in formats:
         fig.savefig(os.path.join(outdir, "{}.{}".format(name, fmt)),
-                    bbox_inches="tight", dpi=150)
+                    bbox_inches="tight", dpi=200)
     plt.close(fig)
 
 
-def plot_efficiency(rows, outdir, formats):
-    groups = group_series(rows, "efficiency")
-    if not groups:
-        return False
-    fig, ax = new_axes()
-    all_p = set()
-    for key in ordered_keys(groups):
-        xs = [p for p, _ in groups[key]]
-        ys = [v for _, v in groups[key]]
-        all_p.update(xs)
-        color, marker = series_style(key)
-        ax.plot(xs, ys, marker=marker, color=color, label=series_label(key),
-                linewidth=2, markersize=7, markeredgecolor=SURFACE, markeredgewidth=0.8)
-    ax.axhline(1.0, linestyle="--", color=MUTED, linewidth=1.5, label=r"ideal  $E = 1$")
-    set_log2_p_axis(ax, sorted(all_p))
-    ax.set_xlabel(r"processes / threads  $p$")
-    ax.set_ylabel(r"efficiency  $E(p)$")
-    ax.set_title("Parallel efficiency")
-    ax.legend(frameon=False)
-    save_figure(fig, outdir, "efficiency", formats)
-    return True
-
-
-def plot_karp_flatt(rows, outdir, formats):
-    groups = group_series(rows, "karp_flatt_e")
-    if not groups:
-        return False
-    fig, ax = new_axes()
-    all_p = set()
-    for key in ordered_keys(groups):
-        xs = [p for p, _ in groups[key]]
-        ys = [v for _, v in groups[key]]
-        all_p.update(xs)
-        color, marker = series_style(key)
-        ax.plot(xs, ys, marker=marker, color=color, label=series_label(key),
-                linewidth=2, markersize=7, markeredgecolor=SURFACE, markeredgewidth=0.8)
-    set_log2_p_axis(ax, sorted(all_p))
-    ax.set_xlabel(r"processes / threads  $p$")
-    ax.set_ylabel(r"Karp-Flatt serial fraction  $e(p)$")
-    ax.set_title("Karp-Flatt: rising $e(p)$ = overhead, not serial fraction")
-    ax.legend(frameon=False)
-    save_figure(fig, outdir, "karp_flatt", formats)
-    return True
-
-
-def plot_mpi_time_decomposition(rows, outdir, formats):
-    by_schedule = {}
-    for row in rows:
-        if row.get("paradigm") != "mpi":
-            continue
-        p = to_int(row.get("p"))
-        total = to_float(row.get("T_min"))
-        comm_fraction = to_float(row.get("comm_fraction"))
-        if p is None or total is None or comm_fraction is None:
-            continue
-        by_schedule.setdefault(row.get("schedule", "-"), []).append((p, total, comm_fraction))
-
-    made = False
-    for schedule, points in by_schedule.items():
-        points.sort()
-        ranks = [p for p, _, _ in points]
-        compute = [t * (1.0 - cf) for _, t, cf in points]
-        comm = [t * cf for _, t, cf in points]
-        positions = list(range(len(ranks)))
-
-        fig, ax = new_axes()
-        ax.bar(positions, compute, color=BLUE, label="compute",
-               edgecolor=SURFACE, linewidth=2)
-        ax.bar(positions, comm, bottom=compute, color=ORANGE, label="communication",
-               edgecolor=SURFACE, linewidth=2)
-        ax.set_xticks(positions)
-        ax.set_xticklabels([str(p) for p in ranks])
-        ax.set_xlabel(r"MPI ranks  $p$")
-        ax.set_ylabel(r"time per run  $T(p)$  [s]")
-        ax.set_title("MPI time decomposition - {}".format(schedule))
-        ax.legend(frameon=False)
-        save_figure(fig, outdir, "mpi_time_{}".format(schedule), formats)
-        made = True
-    return made
-
-
-def plot_cuda_throughput(rows, outdir, formats, gpu_peak):
+def series(rows, paradigm, schedule, column):
+    """[(p, value)] sorted by p for one (paradigm, schedule) series."""
     points = []
     for row in rows:
-        if row.get("paradigm") != "cuda":
+        if row.get("paradigm") != paradigm or row.get("schedule") != schedule:
             continue
-        gflops = to_float(row.get("gflops"))
-        if gflops is None:
+        try:
+            points.append((int(row["p"]), float(row[column])))
+        except (KeyError, TypeError, ValueError):
             continue
-        points.append((row.get("resolution", "?"), gflops))
-    if not points:
-        return False
-
-    points.sort()
-    positions = list(range(len(points)))
-    fig, ax = new_axes()
-    ax.bar(positions, [g for _, g in points], color=AQUA, label="effective",
-           edgecolor=SURFACE, linewidth=2)
-    ax.set_xticks(positions)
-    ax.set_xticklabels([res for res, _ in points])
-    if gpu_peak:
-        ax.axhline(gpu_peak, linestyle="--", color=MUTED, linewidth=1.5,
-                   label="theoretical peak ({:g})".format(gpu_peak))
-    ax.set_xlabel("resolution")
-    ax.set_ylabel("throughput  [GFLOP/s]")
-    ax.set_title("CUDA effective throughput vs peak")
-    ax.legend(frameon=False)
-    save_figure(fig, outdir, "cuda_throughput", formats)
-    return True
+    return sorted(points)
 
 
-def plot_cuda_divergence(rows, outdir, formats):
-    points = []
-    for row in rows:
-        if row.get("paradigm") != "cuda":
+def fit_line(points):
+    """Least-squares (intercept, slope) of y on x."""
+    count = len(points)
+    mean_x = sum(x for x, _ in points) / count
+    mean_y = sum(y for _, y in points) / count
+    slope = (sum((x - mean_x) * (y - mean_y) for x, y in points)
+             / sum((x - mean_x) ** 2 for x, _ in points))
+    return mean_y - slope * mean_x, slope
+
+
+def pixels(row):
+    width, height = row["resolution"].lower().split("x")
+    return int(width) * int(height)
+
+
+def is_reference_problem(row):
+    return (row.get("resolution") == REFERENCE_RESOLUTION
+            and row.get("max_iter") == REFERENCE_MAX_ITER)
+
+
+def find_scaling_run(data_dir):
+    """Latest per-job file whose CUDA rows span more than one resolution."""
+    candidates = []
+    for path in glob.glob(os.path.join(data_dir, "run_*.csv")):
+        match = RUN_FILE.search(os.path.basename(path))
+        if not match:
             continue
-        divergence = to_float(row.get("warp_divergence"))
-        gflops = to_float(row.get("gflops"))
-        if divergence is None or gflops is None:
-            continue
-        points.append((divergence, gflops))
-    if not points:
-        return False
-
-    fig, ax = new_axes()
-    ax.scatter([d for d, _ in points], [g for _, g in points], color=VIOLET,
-               s=64, edgecolor=SURFACE, linewidth=1.5, zorder=3)
-    ax.set_xlabel("warp-divergence proxy  (mean per-warp variance)")
-    ax.set_ylabel("throughput  [GFLOP/s]")
-    ax.set_title("CUDA: throughput vs warp divergence")
-    save_figure(fig, outdir, "cuda_divergence", formats)
-    return True
+        resolutions = {row.get("resolution") for row in read_rows(path)
+                       if row.get("paradigm") == "cuda"}
+        if len(resolutions) > 1:
+            candidates.append((int(match.group(1)), path))
+    return max(candidates)[1] if candidates else None
 
 
-def plot_baseline_growth(rows, outdir, formats):
-    serial = [row for row in rows if row.get("paradigm") == "serial"]
-    made = False
-
-    by_max_iter = {}
-    for row in serial:
-        time = to_float(row.get("T_min"))
-        resolution = parse_resolution(row.get("resolution"))
-        max_iter = to_int(row.get("max_iter"))
-        if time is None or resolution is None or max_iter is None:
-            continue
-        by_max_iter.setdefault(max_iter, []).append((resolution[0] * resolution[1], time))
-    if any(len(v) >= 2 for v in by_max_iter.values()):
-        fig, ax = new_axes()
-        for i, max_iter in enumerate(sorted(by_max_iter)):
-            points = sorted(by_max_iter[max_iter])
-            ax.plot([px for px, _ in points], [t for _, t in points], marker="o",
-                    color=SEQUENCE_COLORS[i % len(SEQUENCE_COLORS)], linewidth=2,
-                    markersize=7, label="max_iter = {}".format(max_iter))
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlabel(r"pixels  ($W \cdot H$)")
-        ax.set_ylabel(r"serial time  $T(1)$  [s]")
-        ax.set_title("Serial cost vs problem size")
-        ax.legend(frameon=False)
-        save_figure(fig, outdir, "baseline_vs_pixels", formats)
-        made = True
-
-    by_resolution = {}
-    for row in serial:
-        time = to_float(row.get("T_min"))
-        max_iter = to_int(row.get("max_iter"))
-        if time is None or max_iter is None:
-            continue
-        by_resolution.setdefault(row.get("resolution", "?"), []).append((max_iter, time))
-    if any(len(v) >= 2 for v in by_resolution.values()):
-        fig, ax = new_axes()
-        for i, resolution in enumerate(sorted(by_resolution)):
-            points = sorted(by_resolution[resolution])
-            ax.plot([m for m, _ in points], [t for _, t in points], marker="s",
-                    color=SEQUENCE_COLORS[i % len(SEQUENCE_COLORS)], linewidth=2,
-                    markersize=7, label=resolution)
-        ax.set_xscale("log")
-        ax.set_xlabel("max_iter")
-        ax.set_ylabel(r"serial time  $T(1)$  [s]")
-        ax.set_title("Serial cost vs max_iter")
-        ax.legend(frameon=False)
-        save_figure(fig, outdir, "baseline_vs_maxiter", formats)
-        made = True
-
-    return made
-
-
-def parse_resolution(text):
-    try:
-        width, height = text.lower().split("x")
-        return int(width), int(height)
-    except (AttributeError, ValueError):
-        return None
-
-
-def plot_row_profile(path, outdir, formats):
-    data = read_row_profile(path)
-    if not data:
-        return False
-
-    indices = [r for r, _ in data]
-    work = [w for _, w in data]
-    n = len(work)
-    mean = sum(work) / n
-    std = (sum((w - mean) ** 2 for w in work) / n) ** 0.5
-    peak = max(work)
-    peak_index = max(range(n), key=lambda i: work[i])
-    lam = peak / mean if mean else 0.0
-    cov = std / mean if mean else 0.0
-
-    fig, ax = new_axes(7.0, 4.2)
-    ax.fill_between(indices, work, color=BLUE, alpha=0.22, linewidth=0)
-    ax.plot(indices, work, color=BLUE, linewidth=1.2)
-    ax.axhline(mean, linestyle="--", color=MUTED, linewidth=1.5,
-               label=r"mean  $\bar{{w}}$ = {:.0f}".format(mean))
-    ax.plot([indices[peak_index]], [peak], marker="v", color=RED, markersize=10,
-            markeredgecolor=SURFACE, markeredgewidth=0.8, zorder=3,
-            label=r"peak  $\lambda$ = {:.2f}".format(lam))
-    ax.set_xlabel(r"row index  $r$")
-    ax.set_ylabel(r"per-row work  $w_r$  [iterations]")
-    ax.set_title(r"Per-row load profile   (CoV = {:.3f})".format(cov))
-    ax.legend(frameon=False)
-    save_figure(fig, outdir, "row_profile", formats)
-    return True
+def read_rows(path):
+    if not path or not os.path.exists(path):
+        return []
+    with open(path, newline="") as handle:
+        return list(csv.DictReader(handle))
 
 
 def read_row_profile(path):
-    if not os.path.exists(path):
-        return []
-    data = []
-    with open(path, newline="") as handle:
-        for row in csv.DictReader(handle):
-            r = to_int(row.get("row"))
-            w = to_float(row.get("iterations"))
-            if r is not None and w is not None:
-                data.append((r, w))
-    data.sort()
-    return data
-
-
-# A predicted scheme borrows the colour and marker of the MPI series it forecasts,
-# so prediction and measurement read as one entity across figures; the dashed
-# line is what distinguishes them.
-PREDICTION_ENTITY = {"block": "block", "cyclic": "cyclic", "dynamic": "master_worker"}
-
-
-def plot_block_imbalance(path, outdir, formats):
-    """Draw the decomposition bounds S <= P/lambda(P) from block_imbalance.py.
-
-    These are predictions derived from the serial w_r alone, so the figure exists
-    before any MPI run does: overlaying the measured speedups on it later turns
-    the gap between the two into the paper's argument (what the static model
-    fails to charge for is communication and scheduling overhead).
-    """
-    configs = read_block_imbalance(path)
-    if not configs:
-        return False
-
-    for (resolution, max_iter), series in sorted(configs.items()):
-        fig, ax = new_axes()
-        all_p = set()
-        for scheme in ("block", "cyclic", "dynamic"):
-            points = sorted(series.get(scheme, []))
-            if not points:
-                continue
-            xs = [p for p, _ in points]
-            ys = [bound for _, bound in points]
-            all_p.update(xs)
-            color, marker = series_style(("mpi", PREDICTION_ENTITY[scheme]))
-            ax.plot(xs, ys, marker=marker, color=color, linestyle="--",
-                    label="{} (predicted)".format(scheme), linewidth=2,
-                    markersize=7, markeredgecolor=SURFACE, markeredgewidth=0.8)
-        if not all_p:
-            plt.close(fig)
+    """[(row, iterations)] from a --row-stats dump, sorted by row."""
+    profile = []
+    for record in read_rows(path):
+        try:
+            profile.append((int(record["row"]), float(record["iterations"])))
+        except (KeyError, TypeError, ValueError):
             continue
-
-        # Ideal drawn over the full span, but only powers of two are labelled:
-        # the sweep also probes the odd master-worker sizes (3, 5, 9, 17), whose
-        # ticks would collide with their neighbours on a log2 axis.
-        span = [min(all_p), max(all_p)]
-        ax.plot(span, span, linestyle=":", color=MUTED, linewidth=1.5,
-                label=r"ideal  $S = p$", zorder=1)
-        set_log2_p_axis(ax, [p for p in sorted(all_p) if p & (p - 1) == 0])
-        ax.set_xlabel(r"ranks  $p$")
-        ax.set_ylabel(r"predicted bound  $S \leq p\,/\,\lambda(p)$")
-        ax.set_title("Decomposition bound   ({}, max_iter = {})".format(
-            resolution or "?", max_iter or "?"))
-        ax.legend(frameon=False)
-        save_figure(fig, outdir, "block_imbalance_{}_n{}".format(
-            resolution or "na", max_iter or "na"), formats)
-
-    return True
+    return sorted(profile)
 
 
-def read_block_imbalance(path):
-    """Read block_imbalance.csv into {(resolution, max_iter): {scheme: [(p, bound)]}}."""
-    if not path or not os.path.exists(path):
-        return {}
-    configs = {}
-    with open(path, newline="") as handle:
-        for row in csv.DictReader(handle):
-            p = to_int(row.get("p"))
-            bound = to_float(row.get("speedup_bound"))
-            scheme = (row.get("scheme") or "").strip()
-            if p is None or bound is None or scheme not in PREDICTION_ENTITY:
-                continue
-            key = (row.get("resolution", ""), row.get("max_iter", ""))
-            configs.setdefault(key, {}).setdefault(scheme, []).append((p, bound))
-    return configs
+def read_bounds(path):
+    """{rule: [(p, speedup_bound)]} at the reference problem from block_imbalance.csv."""
+    bounds = {}
+    for record in read_rows(path):
+        if not is_reference_problem(record) or record.get("scheme") not in RULE_COLOR:
+            continue
+        bounds.setdefault(record["scheme"], []).append(
+            (int(record["p"]), float(record["speedup_bound"])))
+    return bounds
+
+
+def parse_args(argv):
+    here = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.normpath(os.path.join(here, os.pardir, "data"))
+    profiles = sorted(glob.glob(os.path.join(
+        data_dir, "rowprofile_*_res{}_nmax{}.csv".format(
+            REFERENCE_RESOLUTION.split("x")[0], REFERENCE_MAX_ITER))))
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--data-dir", default=data_dir,
+                        help="directory holding the per-job run files (default: %(default)s)")
+    parser.add_argument("--merged", default=os.path.join(data_dir, "merged.csv"),
+                        help="merged dataset from merge_metrics.py (default: %(default)s)")
+    parser.add_argument("--block-imbalance", default=os.path.join(data_dir, "block_imbalance.csv"),
+                        help="bounds from block_imbalance.py (default: %(default)s)")
+    parser.add_argument("--row-profile", default=profiles[-1] if profiles else None,
+                        help="--row-stats dump of the reference problem (default: %(default)s)")
+    parser.add_argument("--scaling-run", default=None,
+                        help="per-job file of the CUDA scaling sweep "
+                             "(default: the latest run spanning several resolutions)")
+    parser.add_argument("--outdir", default=os.path.join(data_dir, "plots"),
+                        help="output directory for figures (default: %(default)s)")
+    parser.add_argument("--format", dest="formats", default="pdf,png",
+                        help="comma-separated output formats (default: %(default)s)")
+    args = parser.parse_args(argv)
+    args.formats = [fmt.strip() for fmt in args.formats.split(",") if fmt.strip()]
+    return args
 
 
 if __name__ == "__main__":
