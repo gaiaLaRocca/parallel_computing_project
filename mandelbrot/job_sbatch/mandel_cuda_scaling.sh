@@ -1,7 +1,7 @@
 #!/bin/bash
 # CUDA problem-scaling sweep (Sweep B) on a single GPU.
 #
-# Fixes the block shape (the Sweep A winner) and varies the PROBLEM, to trace how
+# Fixes the block shape and varies the PROBLEM, to trace how
 # the GPU fills up and where it pays off:
 #   B1  saturation : vary resolution at fixed N_max. Small grids launch too few
 #                    warps to hide latency, so effective GFLOP/s (and speedup)
@@ -46,6 +46,19 @@ nvcc --version | tail -1       # log the CUDA toolkit
 nvidia-smi -L
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv || true
 
+# --- record the NUMA placement of this job ----------------------------------
+# The device->host copy crosses the inter-socket link when SLURM's core and the
+# GPU sit on different sockets, and both change from job to job (8 GPUs, cores
+# assigned on availability). transfer_time can only be read against the
+# placement this very job got, so log it instead of assuming it. sysfs gives
+# the GPU's local cores even where nvidia-smi topo reports NUMA affinity N/A.
+GPU_BUS=$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader | head -1 \
+          | sed 's/^0000//' | tr 'A-F' 'a-f') || true
+echo "numa: gpu ${GPU_BUS:-?}" \
+     "local_cpulist=$(cat /sys/bus/pci/devices/${GPU_BUS}/local_cpulist 2>/dev/null || echo '?')" \
+     "numa_node=$(cat /sys/bus/pci/devices/${GPU_BUS}/numa_node 2>/dev/null || echo '?')"
+numactl --show | grep -E "physcpubind|nodebind" | sed 's/^/numa: /' || true
+
 # --- build in-job ----------------------------------------------------------
 # --fmad=false keeps the escape counts bit-identical to the CPU baseline. If
 # -arch=native is unavailable, pin it: sm_89 (gnode01 L40S) / sm_86 (gnode02 A6000).
@@ -56,10 +69,14 @@ make mandelbrot mandelbrot_cuda NVARCH=-arch=native
 DATA="$SLURM_SUBMIT_DIR/mandelbrot/data"
 JOB=$SLURM_JOB_ID
 REPEAT_CPU=3                              # serial metrics are deterministic
-REPEAT_GPU=10                            # denoise the fast kernel timing
+REPEAT_GPU=30                             # as in Sweep A, where 10 repeats could not
+                                          # separate shapes a few percent apart; the
+                                          # 1024x1024/1000 point repeats Sweep A's
+                                          # 256x1 run, so the two jobs cross-check
 
-# Block shape held fixed across Sweep B. SET THIS TO THE SWEEP A WINNER before
-# submitting; 256x1 is the default (horizontal warps) until Sweep A decides.
+# Block shape held fixed across Sweep B: 256x1, deliberately not the Sweep A
+# fastest (1x256). Sweep A showed the shape is a second-order lever (8% spread),
+# and 256x1 is the horizontal-warp reference block_geometry.py normalises to.
 export MANDEL_BLOCK=256x1
 
 # Runs the serial baseline and the CUDA point for one problem config. The two
