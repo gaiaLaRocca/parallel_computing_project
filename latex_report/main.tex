@@ -1,0 +1,78 @@
+
+% ------------------------
+% ---- DOCUMENT SETUP ----
+% ------------------------
+
+% Variabili per definire se le note e le domande sono attive, 1 se attive, 0 se no.
+% Di default true (1)
+% Leggi il documento per capire a cosa servono
+\def\noteEnabled{1}
+\def\questionEnabled{1}
+
+\input{Impostazioni/packages}
+\input{Impostazioni/stile}
+\input{Impostazioni/comandi}
+
+% ------------------------
+% ---- DOCUMENT START ----
+% ------------------------
+\addbibresource{Bibliografia/Biblioteca.bib} % Importiamo la bibliografia
+
+
+\begin{document} % Inizio documento
+
+\pagenumbering{gobble} % Disabilita numerazione pagine, per fronte, dediche etc.
+
+% Genera il frontespizio. Comando \frontespizio con 6 parametri: 
+% titolo tesi
+% relatore
+% corelatore
+% tu
+% numero matricola
+% anno accademico
+%\frontespizio
+%{La mia stupenda relazione finale \\ che ha un titolo molto lungo}
+%{Colui che Non Risponde}
+%{Colui che Non Esiste}
+%{Colui che Scrive la Relazione}
+%{123456}
+%{2030/2031}
+
+% SE QUALSIASI COSA VA STORTA, TOGLI IL COMANDO, DECOMMENTA QUI SOTTO, E MODIFICA LA PAGINA "FRONTE" CHE TROVI NELLA CARTELLA SPECIALI 
+\input{Speciali/fronte}
+
+%\input{Speciali/dediche} % PAGINA DEDICA
+
+\tableofcontents  % Genera l'indice
+
+\newpage % Nuova pagina
+
+\pagenumbering{arabic} % Riabilita la numerazione in modo che cominci dal primo capitolo
+
+%\setcounter{chapter}{0} % Fa risultare l'introduzione come capitolo 0
+
+% ------------------
+% ---- CHAPTERS ----
+% ------------------
+%\input{Speciali/introduzione}
+\input{Capitoli/Introduzione}
+\newpage
+\input{Capitoli/Frattali}
+\input{Capitoli/Metriche}
+\input{Capitoli/Codice_Seriale}
+
+\input{Capitoli/Parallelizzazione}
+\input{Capitoli/Conclusioni}
+
+% ----------------------
+% ---- BIBLIOGRAPHY ----
+% ----------------------
+%\backmatter
+\sloppy % serve a non far andare i link oltre ai margini
+\printbibliography[heading=bibintoc, title=Bibliografia]
+
+
+% ----------------------
+% ---- DOCUMENT END ----
+% ----------------------
+\end{document} % Fine documento

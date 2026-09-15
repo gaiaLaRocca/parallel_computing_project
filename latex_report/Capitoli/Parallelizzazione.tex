@@ -1,0 +1,274 @@
+\section{Parallelizzazione}
+\label{sec:parallelizzazione}
+\subsection{Frazione parallelizzabile e scelte di decomposizione}
+
+La frazione parallelizzabile $P$ non misura una proporzione di righe di codice,
+bensì la quota del tempo seriale $T_1$ spesa nella parte parallelizzabile.
+Individuarla richiede di distinguere, nel programma seriale, ciò che costituisce
+lavoro indipendente da ciò che resta intrinsecamente seriale.
+
+L'unità naturale di parallelismo è il pixel: il kernel della
+sezione~\ref{sec:seriale-codice} lo elabora in tre passi, tutti indipendenti
+dagli altri pixel.
+\begin{enumerate}
+  \item \textbf{Calcolo del punto $c$.} La conversione dell'indice
+  $(\text{row}, \text{col})$ nel punto del piano complesso usa soltanto variabili
+  locali, senza dipendenze da altri pixel.
+  \item \textbf{Calcolo dell'escape time.} La ricorrenza è sequenziale
+  \emph{dentro} il pixel, perché l'iterazione $n+1$ dipende dalla $n$, ma ogni
+  pixel la esegue in autonomia: il parallelismo risiede \emph{fra} i pixel. È la
+  parte in cui si concentra la quasi totalità del tempo, e quella in cui la
+  variabilità del numero di iterazioni si traduce in sbilanciamento del carico.
+  \item \textbf{Scrittura del risultato.} L'assegnamento
+  \verb|data[row * width + col]| usa un indice univoco per ogni pixel: non vi
+  sono conflitti di scrittura, e la memoria condivisa non richiede né mutua
+  esclusione né sincronizzazione.
+\end{enumerate}
+
+Resta fuori dal task la sola frazione seriale: l'allocazione della matrice,
+l'inizializzazione e la gestione delle strutture dati. Il suo costo è stimato in
+circa un decimo di millisecondo su $722$~ms (sezione~\ref{sec:serial-time}),
+cioè $1 - P \approx 10^{-4}$: a $p = 32$ la legge di Amdahl limita lo speedup a
+circa $31{,}9$, al di sopra di ogni valore misurato. Le perdite di efficienza
+osservate nelle sezioni seguenti vanno dunque cercate altrove, nella
+distribuzione del lavoro.
+
+Quanto alla decomposizione, i due paradigmi CPU non distribuiscono singoli pixel
+ma righe intere, per le ragioni discusse nella sezione~\ref{sec:openmp}; la GPU,
+che dispone di migliaia di thread, assegna invece a ciascuno un solo pixel
+(sezione~\ref{sec:cuda}).
+
+%---------------PREVISIONI DAL SERIALE-----------------
+% Collocata prima di OpenMP e MPI, e non nel capitolo seriale: le analisi dei
+% due paradigmi usano lambda_p per spiegare i propri risultati, e le regole vanno
+% lette accanto ai meccanismi che le realizzano. I valori dipendono dal solo
+% profilo {w_r} del baseline (data/block_imbalance.csv).
+\subsection{Previsioni dal profilo di carico seriale}
+\label{sec:serial-pred-lambdaP}
+
+Applicando al profilo $\{w_r\}$ misurato nella sezione~\ref{serial_results} le
+tre regole di assegnamento definite nella sezione~\ref{sec:serial-predizione}, si
+ottengono lo sbilanciamento effettivo $\lambda_p = p\,M(p)/\mathcal{W}$ e il
+limite $S(p) \le p/\lambda_p$ di ciascuna decomposizione, prima ancora che il
+codice parallelo esista.
+
+Le previsioni non sono formulate per implementazione, ma per regola di
+assegnamento: ciascuna regola è realizzata, con meccanismi diversi, da più di un
+paradigma (tabella~\ref{tab:regole-paradigmi}), e la stessa riga di previsione va
+perciò confrontata con le misure di entrambi. La versione CUDA resta fuori da
+questo quadro: operando a granularità di pixel, non è descritta dal profilo di
+riga, e il suo predittore, ricavato dalla stessa matrice degli escape time, è
+presentato nella sezione~\ref{sec:cuda-previsioni}.
+\vspace{2,5mm}
+\begin{table}[htbp]
+    \centering
+    \begin{tabular}{lll}
+        \hline
+        Regola & OpenMP & MPI \\
+        \hline
+        blocchi  & \texttt{schedule(static)} & decomposizione \texttt{block} \\
+        ciclica  & --- (non misurata) & decomposizione \texttt{cyclic} \\
+        dinamica & \texttt{schedule(dynamic,1)} & master--worker \\
+        \hline
+    \end{tabular}
+    \caption{Corrispondenza fra le tre regole di assegnamento predette dal profilo
+    di carico seriale e i meccanismi che le realizzano nei due paradigmi CPU. La
+    regola ciclica è esercitata dal solo MPI: lo sweep OpenMP non include
+    \texttt{schedule(static,1)}, che ne sarebbe l'equivalente a memoria condivisa.}
+    \label{tab:regole-paradigmi}
+\end{table}
+\vspace{2,5mm}
+\begin{table}[H]
+    \centering
+    \begin{tabular}{ccccccc}
+        \hline
+        & \multicolumn{2}{c}{\textbf{blocchi}} & \multicolumn{2}{c}{\textbf{ciclica}} & \multicolumn{2}{c}{\textbf{dinamica}} \\
+        \textbf{p} & $\lambda_p$ & $S \le$ & $\lambda_p$ & $S \le$ & $\lambda_p$ & $S \le$ \\ \hline
+        2  & 1{,}0000 & 2{,}00  & 1{,}0000 & 2{,}00  & 1{,}0000 & 2{,}00 \\
+        4  & 1{,}8798 & 2{,}13  & 1{,}0001 & 4{,}00  & 1{,}0000 & 4{,}00 \\
+        8  & 2{,}3489 & 3{,}41  & 1{,}0011 & 7{,}99  & 1{,}0000 & 8{,}00 \\
+        16 & 2{,}5937 & 6{,}17  & 1{,}0017 & 15{,}97 & 1{,}0000 & 16{,}00 \\
+        32 & 2{,}6619 & 12{,}02 & 1{,}0095 & 31{,}70 & 1{,}0000 & 32{,}00 \\
+    \end{tabular}
+    \caption{Sbilanciamento effettivo $\lambda_p$ e limite superiore allo
+    speedup $S \le p/\lambda_p$, calcolati dal solo profilo di carico
+    seriale ($1024\times1024$, $N_{\max}=1000$) per le tre regole di
+    assegnamento delle righe.}
+    \label{tab:serial_pred_lambdaP}
+\end{table}
+
+La tabella~\ref{tab:serial_pred_lambdaP} quantifica il costo della scelta
+di decomposizione a parità di hardware e di numero di processori.  Con
+$32$ unità di calcolo, l'assegnamento a blocchi non può superare uno
+speedup di $12{,}02$: il $62\%$ del tempo di calcolo complessivo va perso in
+attesa del processore più carico, poiché le righe centrali costose sono contigue e finiscono
+tutte nello stesso blocco.  La sola sostituzione dell'assegnamento
+contiguo con quello ciclico porta il limite a $31{,}70$, cioè a
+un'efficienza teorica del $99\%$: l'interlacciamento distribuisce le
+righe pesanti fra tutti i processori.  Si noti anche il caso $p=2$, in
+cui tutte e tre le regole danno $\lambda_p = 1$ esattamente.  Per le due
+regole statiche il motivo è la simmetria del dominio rispetto all'asse
+reale: la riga $r$ e la riga $H{-}1{-}r$ campionano punti coniugati e
+hanno perciò carico identico, cosicché sia la partizione in due metà
+contigue sia quella fra righe pari e dispari risultano bilanciate in modo
+esatto.  Per la regola dinamica il motivo è invece che la riga più
+pesante, pari a $2{,}76$ volte la media, resta molto al di sotto della
+quota equa $\mathcal{W}/2$.  Con due soli processori, dunque, la scelta
+della decomposizione è irrilevante: le differenze fra le strategie
+emergono solo quando i blocchi diventano abbastanza piccoli da non
+contenere più un campione rappresentativo del profilo.
+
+Si osserva infine la monotonia annunciata in~\eqref{eq:lambdaP}: per
+l'assegnamento a blocchi $\lambda_p$ cresce con $p$ ($1{,}00 \to 2{,}66$)
+avvicinandosi al valore intrinseco $\lambda = 2{,}76$ misurato nella
+sezione~\ref{serial_results}, che
+verrebbe raggiunto nel caso limite $p = H$.  Il margine fra $2{,}66$ e
+$2{,}76$ misura quanta compensazione fra picchi e valli
+sopravvive ancora aggregando $32$ righe per blocco.
+
+%--------------------- OPEN_MP -------------------
+\input{Capitoli/Parallelizzazione_openMP}
+%--------------------- MPI -------------------
+\input{Capitoli/Parallelizzazione_MPI}
+
+%---------------VALIDAZIONE DELLE PREVISIONI CPU-----------------
+% Dopo MPI: richiede entrambe le campagne CPU, perché ogni regola va confrontata
+% con tutti i meccanismi che la realizzano.
+\subsection{Validazione a posteriori delle previsioni del baseline}
+\label{sec:validazione-previsioni}
+
+Con entrambe le campagne CPU disponibili, i limiti della
+sezione~\ref{sec:serial-pred-lambdaP} possono essere confrontati con gli speedup
+misurati. La tabella~\ref{tab:validazione-regole} mette a fronte, per ciascuna
+delle tre regole, il limite predetto e le misure dei meccanismi che la
+realizzano: venticinque punti di misura contro quindici valori predetti; la
+figura~\ref{fig:cpu-predicted-measured} ne offre la lettura visiva. Alla
+stessa lettura appartiene un caso che la tabella non contempla: uno scheduling
+dinamico a chunk fissi di $c$ righe eredita il limite della decomposizione a
+blocchi con $H/c$ blocchi, come mostra \texttt{dynamic,64} nella
+sezione~\ref{sec:openmp-risultati}.
+\vspace{2,5mm}
+\begin{table}[htbp]
+    \centering
+    \begin{tabular}{lrrrrrrr}
+        \hline
+        Regola & $p$ & $\lambda_p$ & $S \le p/\lambda_p$ &
+        $S$ OpenMP & scarto & $S$ MPI & scarto \\
+        \hline
+        \multicolumn{8}{l}{\emph{blocchi} --- OpenMP \texttt{static}, MPI \texttt{block}} \\
+        & 2  & $1{,}0000$ & $2{,}000$  & $2{,}011$  & $+0{,}6\%$ & $1{,}994$  & $-0{,}3\%$ \\
+        & 4  & $1{,}8798$ & $2{,}128$  & $2{,}132$  & $+0{,}2\%$ & $2{,}120$  & $-0{,}4\%$ \\
+        & 8  & $2{,}3489$ & $3{,}406$  & $3{,}410$  & $+0{,}1\%$ & $3{,}388$  & $-0{,}5\%$ \\
+        & 16 & $2{,}5937$ & $6{,}169$  & $6{,}176$  & $+0{,}1\%$ & $6{,}125$  & $-0{,}7\%$ \\
+        & 32 & $2{,}6619$ & $12{,}022$ & $11{,}999$ & $-0{,}2\%$ & $11{,}697$ & $-2{,}7\%$ \\
+        \hline
+        \multicolumn{8}{l}{\emph{ciclica} --- solo MPI \texttt{cyclic}} \\
+        & 2  & $1{,}0000$ & $2{,}000$  & --- & --- & $1{,}987$  & $-0{,}7\%$ \\
+        & 4  & $1{,}0001$ & $4{,}000$  & --- & --- & $3{,}973$  & $-0{,}7\%$ \\
+        & 8  & $1{,}0011$ & $7{,}991$  & --- & --- & $7{,}918$  & $-0{,}9\%$ \\
+        & 16 & $1{,}0017$ & $15{,}972$ & --- & --- & $14{,}608$ & $-8{,}5\%$ \\
+        & 32 & $1{,}0095$ & $31{,}698$ & --- & --- & $29{,}871$ & $-5{,}8\%$ \\
+        \hline
+        \multicolumn{8}{l}{\emph{dinamica} --- OpenMP \texttt{dynamic,1}, MPI master--worker} \\
+        & 2  & $1{,}0000$ & $2{,}000$  & $2{,}011$  & $+0{,}6\%$ & $1{,}990$  & $-0{,}5\%$ \\
+        & 4  & $1{,}0000$ & $4{,}000$  & $4{,}022$  & $+0{,}5\%$ & $3{,}967$  & $-0{,}8\%$ \\
+        & 8  & $1{,}0000$ & $8{,}000$  & $8{,}037$  & $+0{,}5\%$ & $7{,}921$  & $-1{,}0\%$ \\
+        & 16 & $1{,}0000$ & $16{,}000$ & $15{,}977$ & $-0{,}1\%$ & $15{,}583$ & $-2{,}6\%$ \\
+        & 32 & $1{,}0000$ & $32{,}000$ & $30{,}988$ & $-3{,}2\%$ & $31{,}102$ & $-2{,}8\%$ \\
+        \hline
+    \end{tabular}
+    \caption{Validazione a posteriori: speedup misurato contro il limite
+        $p/\lambda_p$ predetto dal solo profilo di carico seriale, per ciascuna delle
+        tre regole di assegnamento e per ciascun meccanismo che la realizza. Griglia
+        $1024^2$, $N_{\max}=1000$, kernel \emph{bare}. Scarto positivo significa
+        misura sopra il limite predetto. Ogni paradigma è riferito alla baseline
+        seriale del proprio job ($0{,}72563$~s per OpenMP, $0{,}72021$~s per MPI): le
+        due differiscono dello $0{,}75\%$, che è quindi il fondo di risoluzione della
+        colonna ``scarto'' e la ragione per cui gli scostamenti sotto l'$1\%$ non
+        vanno confrontati fra loro nel segno.}
+    \label{tab:validazione-regole}
+\end{table}
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{Immagini/grafici/cpu_predicted_vs_measured}
+    \caption{Speedup misurato contro il limite $p/\lambda_p$ previsto dal profilo di
+    carico seriale, un pannello per regola di assegnamento. La linea è il limite
+    previsto, gli anelli le misure OpenMP, i quadrati le misure MPI; la retta
+    grigia è l'ideale $S = p$. Assi logaritmici in base $2$; i dati sono quelli
+    della tabella~\ref{tab:validazione-regole}.}
+    \label{fig:cpu-predicted-measured}
+\end{figure}
+
+\paragraph{Lo statico satura il limite predetto.}
+Per la regola a blocchi l'accordo con \texttt{schedule(static)} è entro lo
+$0{,}6\%$ su tutti e cinque i punti. La decomposizione statica non lascia quindi
+margine di ottimizzazione implementativa, perché tocca già il proprio limite
+teorico: la perdita del $62\%$ di efficienza a $32$ thread non è imputabile a
+overhead di OpenMP, a cache o a sincronizzazione, che insieme valgono meno dello
+$0{,}6\%$, ma unicamente al fatto che le righe costose dell'insieme sono contigue
+e finiscono nello stesso blocco. L'unica via per superarla è cambiare regola di
+assegnamento.
+
+\paragraph{La previsione dipende dalla regola, non dal paradigma.}
+Il risultato che la tabella rende visibile è che la previsione dipende dalla
+\emph{regola} e non dal meccanismo. Le due realizzazioni della regola a blocchi
+--- una clausola \texttt{schedule(static)} in memoria condivisa e una
+decomposizione esplicita con gather collettiva in memoria distribuita --- cadono
+sullo stesso limite predetto entro pochi decimi di punto fino a $p=16$, pur non
+avendo in comune né il modello di memoria né il lanciatore. Lo stesso vale per la regola dinamica, dove uno scheduler di runtime
+e un protocollo master--worker esplicito arrivano a $30{,}99$ e $31{,}10$ su un
+limite di $32{,}00$. Poiché $\lambda_p$ è calcolato dal solo $\{w_r\}$ seriale,
+questa coincidenza è la conferma più solida del modello predittivo: la stessa riga di previsione governa due implementazioni indipendenti.
+
+La regola ciclica, che lo sweep OpenMP non esercitava e che restava priva di
+verifica, è ora confermata dove il modello è più esposto: prevede
+$\lambda_p \approx 1$ e quindi speedup quasi ideale, e il cyclic lo raggiunge
+entro l'$1\%$ fino a $p=8$. È la conferma che $\lambda_p$ non si limita a
+descrivere un fallimento --- come faceva per i blocchi --- ma predice anche il
+successo di una regola alternativa.
+
+\paragraph{Dove il modello smette di predire, e perché.}
+Tre scostamenti escono dal margine, e ciascuno indica un termine di costo che il
+modello compute-only~\eqref{eq:makespan} per costruzione non contiene.
+
+Il primo è la regola dinamica ai valori più alti di $p$: a $p=32$ entrambi i
+meccanismi si fermano attorno al $97\%$ del limite ($-3{,}2\%$ OpenMP, $-2{,}8\%$
+MPI). Il modello del makespan tratta il lavoro come frazionabile a piacere,
+mentre l'unità indivisibile è la riga: l'ultima riga assegnata a un worker può
+essere la più pesante, e questo \emph{effetto coda} riduce il limite di al più
+$(\lambda_{\text{riga}} - 1)\,p/H$, cioè il $2{,}8\%$ a $p=16$ e il $5{,}5\%$ a
+$p=32$. Tutte le misure dinamiche restano dentro questo margine. Per OpenMP vi
+contribuisce anche la contesa sulla coda condivisa
+(sezione~\ref{sec:openmp-risultati}), e i dati non permettono di separare i due
+termini.
+
+Il secondo è \texttt{cyclic} a $p=16$ e $p=32$ ($-8{,}5\%$ e $-5{,}8\%$), l'unico
+caso in cui lo scarto è grande e non ha spiegazione dentro il modello: come
+discusso nella sezione~\ref{sec:mpi-risultati}, la causa candidata è il riordino
+seriale di de-interlacciamento su rank $0$, un costo di implementazione
+indipendente da $p$ e quindi invisibile a una previsione fondata sul solo
+profilo di carico, che però non spiega da solo lo scarto a $p=16$. Quel punto è
+anche il più rumoroso della campagna e va rimisurato.
+
+Il terzo è \texttt{block} MPI a $p=32$ ($-2{,}7\%$, contro il $-0{,}2\%$ della
+realizzazione OpenMP della stessa regola). La gather ne spiega poco meno della
+metà, pesando l'$1{,}2\%$ del tempo; il resto non è attribuibile con le misure
+disponibili. Questi scostamenti corrispondono ai termini che il modello non
+include --- granularità finita, costi di implementazione, comunicazione --- e
+nessuno supera l'$8{,}5\%$ sui venticinque punti di misura.
+
+\paragraph{Conseguenza interpretativa.}
+Che le regole statiche saturino il proprio limite entro frazioni di punto
+percentuale ha un effetto sulla lettura di tutto il lavoro: gli scostamenti
+dallo speedup ideale qui osservati non originano da una frazione seriale nel
+senso di Amdahl --- che nel codice è trascurabile --- ma dalla distribuzione del
+lavoro. Vanno perciò letti attraverso $\lambda_p$ più che attraverso la metrica
+di Karp--Flatt, che pure li segnala correttamente ma li attribuisce a una causa
+che questo codice non ha: le forme chiuse di $e(p)$ ricavate per lo
+\texttt{static} di OpenMP (sezione~\ref{sec:openmp-risultati}) e per il block
+MPI (sezione~\ref{sec:mpi-risultati}) mostrano che la ``frazione seriale
+sperimentale'' non è che $\lambda_p$ riscritto in un'altra variabile. È il
+criterio con cui vanno lette tutte le colonne $e(p)$ di questo capitolo.
+
+%-------------CUDA----------------------
+\input{Capitoli/Parallelizzazione_CUDA}

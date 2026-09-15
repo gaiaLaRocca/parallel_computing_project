@@ -1,0 +1,112 @@
+% ------------------------
+% ---- DOCUMENT STYLE ----
+% ------------------------
+
+\pagestyle{plain}
+\raggedbottom % Se la pagina non è completa, lascia lo spazio alla fine
+\titleformat{\chapter}[display]
+    {\normalfont\huge\bfseries}{\chaptertitlename\ \thechapter}{10pt}{\LARGE}
+\titlespacing*{\chapter}{0pt}{0pt}{20pt}
+\chaptertitlefont{\fontsize{22pt}{30pt}\selectfont}
+
+%\hypersetup{ % Setup dell'aspetto dei link, se vuoi qualcosa di particolare
+%    colorlinks,
+%    citecolor=black,
+%    filecolor=black,
+%    linkcolor=black,
+%    urlcolor=black
+%}
+
+% \renewcommand{\footnoterule}{ % Rende la linea delle footnotes larga tutta la pagina
+%   \kern -3pt
+%   \hrule width \textwidth height 1pt
+%   \kern 2pt
+% } 
+
+\renewcommand{\footnotesize}{\fontsize{11pt}{13pt}\selectfont} % Imposta la dimensione del testo delle footnotes
+\setlength{\footnotesep}{0.5cm} % Imposta lo spazio fra e singole footnotes
+\setlength{\skip\footins}{1.5cm} % Imposta lo spazio fra il corpo e le footnotes
+
+% Definizione colori
+\definecolor{codebackground}{gray}{0.96}      
+\definecolor{commentgrey}{HTML}{888888}      
+\definecolor{keywordblue}{HTML}{1C82B6}     
+\definecolor{funcred}{HTML}{D3545F}        
+\definecolor{stringgreen}{HTML}{7CA736}          
+\definecolor{returnorange}{HTML}{CC5500}
+
+% Configurazione globale
+\lstset{
+    language=C++,
+    basicstyle=\ttfamily\scriptsize,          
+    backgroundcolor=\color{codebackground},
+    breaklines=true,
+    breakatwhitespace=true,
+    showstringspaces=false,
+    keepspaces=true,
+    frame=single,
+    framerule=0pt,
+    stringstyle=\color{stringgreen},
+    commentstyle=\color{commentgrey},
+    alsoletter={_},
+    keywordstyle=\color{keywordblue},
+    morekeywords={using, for, if, else, int, float, double, char, void, bool, struct, class, public, private, protected, const, static, virtual, template, typename, switch, case, default, break, continue, do, while, new, delete, try, catch, throw, inline, typedef, sizeof, enum, extern, volatile, register, union, explicit, friend, operator, this, goto, nullptr, auto, constexpr, decltype, true, false, namespace},
+    emph={main, printf, MPI_Init, MPI_Finalize, should_exploit_symmetry, rows_to_compute, escape_time, mirror_computed_rows, lies_in_main_cardioid, lies_in_period_two_bulb, pruning_enabled, symmetry_enabled, compute_mandelbrot, MandelbrotImage, Viewport},
+    emphstyle=\color{funcred},
+    emph={[2]return},
+    emphstyle={[2]\color{returnorange}},
+    % Mappatura direttive preprocessore e header
+    literate={\#include}{{\textcolor{keywordblue}{\#include}}}{8}
+             {\#define}{{\textcolor{keywordblue}{\#define}}}{7}
+             {<cmath>}{{\textcolor{stringgreen}{<cmath>}}}{7} 
+             {<cstddef>}{{\textcolor{stringgreen}{<cstddef>}}}{9} 
+             {<stdid.h>}{{\textcolor{stringgreen}{<stdid.h>}}}{9} 
+             {<stdio.h>}{{\textcolor{stringgreen}{<stdio.h>}}}{9}
+}
+
+\lstdefinelanguage{CUDA}{
+    language=C++,
+    morekeywords={
+        % execution configuration
+        __global__, __device__, __host__, __shared__, __constant__,
+        % built-in variables
+        threadIdx, blockIdx, blockDim, gridDim, warpSize,
+        % types
+        dim3, cudaError_t, cudaStream_t, cudaEvent_t,
+        % memory functions
+        cudaMalloc, cudaFree, cudaMemcpy, cudaMemset,
+        cudaMallocManaged, cudaDeviceSynchronize,
+        cudaMemcpyHostToDevice, cudaMemcpyDeviceToHost,
+        % occupancy API
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor,
+        cudaOccupancyMaxPotentialBlockSize,
+        % error handling
+        cudaGetLastError, cudaGetErrorString, cudaSuccess
+    },
+    sensitive=true
+}
+
+% Definizione ambiente inline
+\newtcbox{\inlinecode}[1][codebackground]{
+    on line,
+    box align=base,
+    colback=#1,
+    colframe=#1,
+    boxrule=0pt,
+    arc=3pt,
+    outer arc=3pt,
+    leftrule=0pt,
+    rightrule=0pt,
+    toprule=0pt,
+    bottomrule=0pt,
+    boxsep=0pt,
+    left=2pt,
+    right=2pt,
+    top=2pt,
+    bottom=2pt
+}
+
+\newcommand{\code}[1]{\inlinecode{\lstinline{#1}}}
+
+\captionsetup{labelfont=bf}
+

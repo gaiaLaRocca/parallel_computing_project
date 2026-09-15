@@ -1,0 +1,61 @@
+\begin{itemize}
+    \item Introduzione: capitolo non numerato, va all'inizio. Descrive la situazione "iniziale", quella di quando hai cominciato lo stage, descrive obiettivi e metodologie, e fornisce una panoramica della relazione finale. 
+    \item La Ciccia: 2-3 capitoli dove spieghi cosa hai fatto nello stage. Nel caso di relazioni teoriche sono spesso 
+    \begin{itemize}
+        \item Introduzione teorica
+        \item Studio (elaborazione)
+        \item Implementazione se c'è
+    \end{itemize}
+    In ogni caso di solito il primo capitolo è sempre di nozioni utili a comprendere il resto della tesi. Un po' come se fosse un formulario e un libro di testo insieme, ma condensato in 5 pagine.
+    \item Conclusioni: capitolo numerato che ripercorre la relazione mostrando i risultati ottenuti e gli sviluppi futuri che ne potrebbero derivare.
+\end{itemize}
+
+%\textbf{OGNI. CAPITOLO. DEVE. AVERE. UN. SUO. FILE. LATEX.}
+
+
+
+
+% Contatore per le note
+\newcounter{NoteCounter}
+% Titolo per le note
+\newcommand{\noteTitle}{\color{Green}\vspace{10pt}\noindent\textbf{\refstepcounter{NoteCounter}Nota n.\theNoteCounter }}
+
+% Comando per inserire una nota
+\newcommand{\nota}[1]{%
+\ifnum0=\noteEnabled\relax
+\else
+    \noteTitle{}
+    \textit{#1}
+    \color{black}
+\fi
+}
+
+
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[trim={2cm 0cm 0cm 0cm}, scale=0.25, keepaspectratio]
+  {Immagini/Dal 9 maggio.png}
+  \caption{Area chart.}
+\end{figure}
+
+
+\begin{figure}[h]
+    \centering
+    \begin{subfigure}[b]{0.4\textwidth}
+        \centering
+        \includegraphics[width=7cm]{Immagini/Capitolo2/privateKeyCriptography.PNG}
+        \caption{Crittografia simmetrica}
+        \label{simmetric}
+    \end{subfigure}
+    \hspace{0.5cm}
+    \begin{subfigure}[b]{0.4\textwidth}
+        \centering
+        \includegraphics[width=7cm]{Immagini/Capitolo2/publicKeyCriptography.PNG}
+        \caption{Crittografia asimmetrica}
+        \label{asimmetric}
+    \end{subfigure}
+    \caption{Confronto tra i due principali schemi crittografici~\cite{hankerson}.}
+    \label{fig:confronto}
+\end{figure}
+\vspace{2mm}

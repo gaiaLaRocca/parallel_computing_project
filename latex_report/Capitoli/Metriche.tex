@@ -1,0 +1,383 @@
+\section{Metriche e Modelli di Prestazione}
+
+\subsection{Metriche della baseline sequenziale}
+\label{sec:metriche-seriale}
+
+Si descrivono qui le grandezze misurate sulla baseline, il modello analitico che
+le lega al carico computazionale e gli indici che anticipano il comportamento
+delle versioni parallele. Le grandezze si dividono in due categorie. Il tempo di
+esecuzione dipende dall'hardware e va misurato su ogni macchina e per ogni
+configurazione. Il lavoro $\mathcal{W}$, gli indici $\lambda$ e CoV e il
+checksum dipendono invece soltanto dagli input ($W\times H$, $N_{\max}$,
+viewport): sono \emph{deterministici}, grazie ai vincoli di riproducibilità
+(sezione~\ref{sec:artefatto}), e si calcolano una sola volta dalla baseline, per
+qualunque paradigma e numero di unità di calcolo.
+
+\subsubsection{Tempo di esecuzione}
+\label{sec:serial-time}
+
+La misura fondamentale è il tempo di calcolo dell'intera immagine, ottenuto con
+l'orologio monotono della libreria standard, \texttt{steady\_clock}, che non può
+essere spostato all'indietro da correzioni di sistema ed è quindi adatto a
+misurare intervalli. La finestra di cronometraggio racchiude l'allocazione della
+matrice e i due cicli annidati che scandiscono la griglia, mentre esclude la
+scrittura su disco e il calcolo delle metriche. L'allocazione è inclusa
+deliberatamente e non per semplicità: la definizione di speedup richiede che
+$T_1$ e $T_\parallel(p)$ cronometrino la \emph{stessa} regione di codice, e
+nelle versioni parallele l'allocazione della matrice condivisa è parte del
+costo. Il suo peso è comunque marginale: la matrice di riferimento occupa
+$1024^2$ interi a 32~bit, cioè 4~MiB, il cui azzeramento si stima dell'ordine
+del decimo di millisecondo, contro i $722$~ms del calcolo.
+
+Ogni configurazione è eseguita $R$ volte consecutive; si adotta il
+\emph{minimo} sulle ripetizioni
+%
+\begin{equation}
+    T_1 = \min_{1 \le t \le R}\, T_t^{(\mathrm{obs})}
+    \label{eq:T1}
+\end{equation}
+%
+come stima di riferimento. Il rumore di sistema (migrazione fra core,
+interruzioni, contesa sulla cache) può soltanto aggiungere tempo, mai sottrarlo:
+la corsa più rapida è la meno contaminata. Mediana e media sono comunque
+riportate come indicatori della variabilità sperimentale; una divergenza
+significativa tra $T_1$ e $T_\mathrm{mean}$ segnala che almeno una ripetizione è
+stata perturbata da fattori esterni.
+
+\subsubsection{Modello analitico del carico computazionale}
+\label{sec:lavoro}
+
+Si indica con $\tau$ il tempo impiegato da un core per eseguire un'iterazione
+della ricorrenza introdotta nella sezione~\ref{subsec:mandelbrot}. Si assume
+$\tau$ costante, perché ogni iterazione esegue lo stesso insieme di operazioni
+in virgola mobile; l'ipotesi è verificata nella sezione~\ref{serial_results},
+dove $\tau$ resta costante entro l'$1{,}3\%$ su configurazioni il cui lavoro
+totale varia di un fattore $64$. Il tempo di calcolo del pixel $(i,j)$ è
+$\tau\,n_{i,j}$, e varia da pixel a pixel per le ragioni viste nella
+sezione~\ref{subsec:mandelbrot}.
+
+Nel codice sequenziale la variabilità per pixel non influenza il tempo
+complessivo: un unico processore visita tutti i pixel in successione e il tempo
+totale è la somma dei costi individuali, indipendente dall'ordine di visita,
+%
+\begin{equation}
+    T_1 = \tau\,\mathcal{W},
+    \qquad
+    \mathcal{W} = \sum_{i=0}^{H-1}\sum_{j=0}^{W-1} n_{i,j}.
+    \label{eq:lavoro}
+\end{equation}
+%
+Nel caso parallelo, invece, la variabilità determina lo sbilanciamento del
+carico fra le unità di calcolo (sezione~\ref{sec:profilo-carico}): il tempo di
+completamento non è più proporzionale alla somma totale $\mathcal{W}$, ma al
+\textit{carico dell'unità di calcolo più carica}.
+
+Da $\mathcal{W}$ si ricavano il numero totale di FLOP, $F = \varphi\,\mathcal{W}$
+con $\varphi = 8$, e il throughput computazionale\footnote{$\Pi(p)$ misura la
+velocità dell'intero sistema a $p$ unità di calcolo, non quella per singolo
+core: quest'ultima si otterrebbe dividendo per $p$.}
+$\Pi = F\,/\,(T_1 \cdot 10^{9})$ in GFLOP/s. La definizione si estende al caso
+parallelo, $\Pi(p) = F/(T_\parallel(p)\cdot10^9)$. Poiché $F$ è la stessa
+quantità per ogni variante, $\Pi(p)$ non è un rapporto rispetto a $T_1$: è
+l'unica metrica \emph{assoluta} del lavoro, e permette di confrontare
+direttamente CPU e GPU.
+
+Il valore $\varphi = 8$ è ricavato dal corpo del ciclo
+(algoritmo~\ref{alg:escape_time}): le due moltiplicazioni di $2xy$ e i quadrati
+$x^2$ e $y^2$ danno 4 moltiplicazioni; l'addizione di $y_0$, la sottrazione
+$x^2 - y^2$, l'addizione di $x_0$ e la somma $x^2 + y^2$ del test di fuga danno
+4 addizioni. Il numero di FLOP è quindi calcolato \emph{analiticamente} dalla
+matrice dei tempi di fuga, e non misurato strumentando il codice, che
+altererebbe il tempo da misurare.
+
+L'intensità aritmetica che ne risulta colloca il problema nel regime
+\emph{compute-bound}. Nella configurazione di riferimento ($1024\times1024$,
+$N_{\max}=1000$) ogni pixel richiede in media $247{,}6$ iterazioni, cioè circa
+$1{,}98\cdot10^{3}$~FLOP, a fronte di una sola scrittura di 4~byte in memoria:
+circa $5\cdot10^{2}$ FLOP per byte, un rapporto che cresce con $N_{\max}$. È
+quindi improbabile che la banda di memoria limiti il calcolo; la verifica
+sperimentale è nella sezione~\ref{serial_results}, dove $\tau$ non cresce con la
+dimensione della matrice.
+
+\subsubsection{Profilo di carico e indici di sbilanciamento}
+\label{sec:profilo-carico}
+
+La riga è l'unità di assegnamento delle due parallelizzazioni su CPU: OpenMP
+distribuisce le iterazioni del ciclo esterno, e MPI assegna righe intere con
+regole a blocchi, cicliche o dinamiche. La versione CUDA opera invece a
+granularità di pixel, e per essa l'irregolarità si studia attraverso la
+divergenza dei warp (sezione~\ref{sec:cuda}). Si definisce il \emph{carico di
+riga}
+%
+\begin{equation}
+    w_r = \sum_{j=0}^{W-1} n_{r,j}, \qquad 0 \le r < H,
+    \label{eq:carico-riga}
+\end{equation}
+%
+di media $\bar{w} = \mathcal{W}/H$ e deviazione standard $\sigma_w$. Poiché la
+riga è indivisibile, il profilo $\{w_r\}$, disponibile dalla sola esecuzione
+seriale, permette di calcolare il limite di speedup di qualunque regola che
+assegni righe intere, prima di implementare il codice parallelo
+(sezione~\ref{sec:serial-predizione}).
+
+Si definiscono due indici adimensionali:
+%
+\begin{equation}
+    \lambda = \frac{\max_r w_r}{\bar{w}},
+    \qquad
+    \mathrm{CoV} = \frac{\sigma_w}{\bar{w}}.
+    \label{eq:indicatori}
+\end{equation}
+%
+Entrambi sono proprietà \emph{intrinseche} del profilo $\{w_r\}$, indipendenti
+da $p$ e dalla regola di assegnamento.
+
+\paragraph{Interpretazione di $\lambda$.}
+$\lambda$ misura il rapporto fra la riga più pesante e la riga media. Poiché
+nessuna regola può completare il calcolo prima che la riga più pesante sia
+ultimata, lo speedup di qualunque decomposizione per righe è limitato da
+%
+\[
+    S \;\le\; \frac{\mathcal{W}}{\max_r w_r} \;=\; \frac{H}{\lambda}.
+\]
+%
+Con $p \ll H$ ogni unità di calcolo riceve molte righe, e questo limite è
+lontano. Detto $W_k$ il carico dell'unità~$k$ (con $0 \le k < p$) e
+$\bar{W} = \mathcal{W}/p$ il carico medio, si definisce lo sbilanciamento
+\emph{effettivo}
+%
+\begin{equation}
+    \lambda_p = \frac{\max_k\, W_k}{\bar{W}},
+    \label{eq:lambdaP}
+\end{equation}
+%
+che dipende dalla regola di assegnamento. Per le tre regole considerate
+$\lambda_p \le \lambda$, con $\lambda_p = \lambda$ nel caso limite $p = H$.
+Aggregare righe non basta però a bilanciare il carico: se le righe pesanti sono
+contigue, come in questo problema, finiscono nello stesso blocco e $\lambda_p$
+resta vicino a $\lambda$, ed è ciò che le regole cicliche e dinamiche cercano di
+evitare. Nel modello compute-only lo speedup vale $p/\lambda_p$
+(sezione~\ref{sec:metriche-comuni}).
+
+\paragraph{Interpretazione di CoV.}
+Il $\mathrm{CoV}$ quantifica la dispersione \emph{globale} del profilo su scala
+relativa:
+\begin{itemize}
+    \item $\mathrm{CoV} = 0$ significa che tutte le righe hanno carico identico, ovvero che il carico è perfettamente uniforme;
+    \item $\mathrm{CoV} = 1$ significa che lo scarto tipico è grande quanto la media stessa, il che equivale a un'irregolarità molto marcata.
+\end{itemize}
+\vspace{3mm}
+I due indici non sono intercambiabili: solo $\lambda$, attraverso $\lambda_p$,
+fornisce un limite allo speedup; il $\mathrm{CoV}$ descrive la dispersione del
+profilo e suggerisce quanto possa rendere uno scheduling dinamico a grana fine.
+
+\paragraph{Corrispondenza con il dataset.}
+Nei file di output $\mathcal{W}$ è la colonna \texttt{W}, $T_1$ è
+\texttt{T\_min}, $\Pi$ è \texttt{gflops}, $\lambda$ è \texttt{lambda\_row},
+$\mathrm{CoV}$ è \texttt{cov} e $p$ è \texttt{p}. La colonna
+\texttt{lambda\_block} contiene, per ogni run parallela e qualunque sia la regola
+usata, il $\lambda_p$ della decomposizione a blocchi contigui: è quindi il limite
+dello scheduling statico, non delle regole cicliche o dinamiche
+(sezione~\ref{sec:serial-predizione}). Nel testo $P$ maiuscola indica la
+frazione parallelizzabile della legge di Amdahl, e $k$ l'indice delle unità di
+calcolo.
+
+\subsection{Metriche delle implementazioni parallele}
+\label{sec:metriche-comuni}
+
+Le metriche seguenti dipendono soltanto dai tempi di esecuzione, e non dal
+meccanismo con cui il parallelismo è realizzato: definirle una sola volta
+garantisce che i paradigmi siano confrontati sulle stesse basi. Sulla GPU, dove
+il numero di unità di calcolo non è una variabile controllabile, si usano
+soltanto tempo e speedup (sezione~\ref{sec:cuda-metriche}).
+
+\subsubsection{Tempo parallelo}
+Il tempo della versione parallela su $p$ unità di calcolo è misurato sulla
+stessa finestra di cronometraggio di $T_1$ e stimato con il minimo su $R$
+ripetizioni:
+%
+\begin{equation}
+    T_\parallel(p) = \min_{1 \le t \le R}\, T_t^{(\mathrm{obs})}.
+    \label{eq:Tpar}
+\end{equation}
+%
+Il calcolo termina quando l'unità più carica conclude la propria parte, quindi
+$T_\parallel(p)$ stima il \emph{\textbf{makespan}} $M(p)$, il massimo dei tempi
+di completamento delle singole unità. Nel modello della
+sezione~\ref{sec:profilo-carico}
+%
+\begin{equation}
+    M(p) = \tau\,\max_{0 \le k < p} W_k,
+    \qquad W_k = \sum_{r \in \mathcal{R}_k} w_r,
+    \label{eq:makespan}
+\end{equation}
+%
+dove $\mathcal{R}_k$ è l'insieme delle righe assegnate all'unità~$k$. Il modello
+considera soltanto il calcolo, e per questo è detto \emph{compute-only}. Il
+tempo misurato vi aggiunge l'overhead di comunicazione e sincronizzazione,
+$T_\parallel(p) = M(p) + \epsilon_{\text{overhead}}$, per cui, a meno del rumore
+di misura, $T_\parallel(p) \ge M(p)$.
+
+\subsubsection{Speedup ed efficienza}
+Detto $T_1$ il tempo della baseline sequenziale (sezione~\ref{sec:serial-time})
+e $T_\parallel(p)$ il tempo della versione parallela su $p$ unità di calcolo, lo
+\emph{\textbf{speedup}} e l'\emph{\textbf{efficienza}} sono
+\begin{equation}
+    S(p) = \frac{T_1}{T_\parallel(p)},
+    \qquad
+    E(p) = \frac{S(p)}{p} = \frac{T_1}{p\,T_\parallel(p)}.
+    \label{eq:speedup-efficienza}
+\end{equation}
+Lo speedup misura il fattore di accelerazione, cioè quante volte il codice
+parallelo è più veloce di quello sequenziale; l'efficienza è la frazione di
+tempo in cui le unità di calcolo sono impiegate utilmente. $S = p$ ed $E = 1$
+corrispondono allo scaling lineare ideale. Sostituendo il modello
+compute-only~\eqref{eq:makespan} e $T_1 = \tau\,\mathcal{W}$:
+%
+\[
+    S(p) \;\approx\; \frac{\tau\,\mathcal{W}}{\tau\,\max_k W_k}
+    = \frac{\mathcal{W}}{\max_k W_k}
+    = \frac{p}{\lambda_p},
+\]
+%
+dove $\lambda_p$ è definito in~\eqref{eq:lambdaP}. Il fattore $\tau$ si
+cancella: nel modello, speedup ed efficienza dipendono soltanto dalla
+distribuzione delle iterazioni fra le unità di calcolo, non dalla velocità del
+processore. Poiché $T_\parallel(p) \ge M(p)$, $p/\lambda_p$ è un limite
+superiore allo speedup misurato.
+
+\subsubsection{Legge di Amdahl}
+A dimensione del problema fissata, detta $P$ la frazione di tempo
+parallelizzabile e $1-P$ quella seriale, lo speedup è limitato superiormente da
+\[
+    S(p) \le \frac{1}{(1-P) + \dfrac{P}{p}}
+    \;\xrightarrow[p\to\infty]{}\; \frac{1}{1-P}.
+\]
+Come mostrato nella sezione~\ref{sec:parallelizzazione}, nel codice in esame
+$1-P \approx 10^{-4}$: Amdahl prevede uno speedup quasi ideale e fornisce il
+\emph{limite di riferimento}, ma non spiega gli scostamenti osservati.
+
+\subsubsection{Metrica di Karp--Flatt}
+Per rendere conto di tali scostamenti si ricorre alla frazione seriale
+\emph{sperimentale} o \emph{empirica}
+\begin{equation}
+    e(p) = \frac{\dfrac{1}{S(p)} - \dfrac{1}{p}}{1 - \dfrac{1}{p}},
+    \label{eq:karp-flatt}
+\end{equation}
+ottenuta invertendo la legge di Amdahl a partire dallo speedup misurato. $e(p)$
+è ricavata dai tempi effettivi e assorbe in un unico indicatore \emph{tutti} gli
+effetti \textit{non} ideali: sbilanciamento del carico, comunicazione e
+sincronizzazione. È pertanto rilevante la sua variazione al crescere di~$p$:
+%
+\begin{itemize}
+    \item se $e(p)$ è \textbf{costante}, la perdita di efficienza è
+    imputabile a una frazione seriale vera e propria, limite strutturale
+    insensibile all'aumento di~$p$;
+    \item se $e(p)$ \textbf{cresce} con $p$, la perdita proviene da
+    overhead che peggiora con il grado di parallelismo: costi di
+    comunicazione o sincronizzazione crescenti, oppure saturazione
+    dello speedup per granularità troppo grossa;
+    \item se $e(p)$ \textbf{decresce} con $p$, lo speedup continua a
+    crescere ma con efficienza strutturalmente ridotta: non c'è un
+    overhead crescente, ma uno sbilanciamento il cui tetto scala
+    con~$p$. La metrica tende a zero, non a un valore fisso.
+\end{itemize}
+%
+In questo codice la frazione seriale è trascurabile, e le perdite osservate
+derivano soprattutto da sbilanciamento e overhead: $e(p)$ va quindi letta per il
+suo andamento, che indica \emph{quale} sia la causa. Per lo sbilanciamento, la
+grandezza che ne quantifica l'effetto resta $\lambda_p$.
+
+\subsection{Previsione delle prestazioni parallele dal profilo di carico seriale}
+\label{sec:serial-predizione}
+Il modello compute-only permette di calcolare i limiti di speedup prima di
+implementare le versioni parallele. Poiché $\tau$ è costante, il makespan è
+proporzionale al carico dell'unità più carica, che dipende soltanto dal profilo
+$\{w_r\}$ e dalla regola con cui le righe vengono assegnate. Fissata la regola,
+$M(p)$ si calcola analiticamente, e con esso
+$\lambda_p = p\,M(p)/(\tau\,\mathcal{W})$ e il limite $S(p) \le p/\lambda_p$. Si
+considerano le tre regole implementate nei capitoli successivi:
+\begin{itemize}
+    \item \textbf{a blocchi}: all'unità $k$ le righe contigue
+    $[\,k\,H/p,\;(k{+}1)H/p\,)$;
+    \item \textbf{ciclica}: la riga $r$ all'unità $r \bmod p$;
+    \item \textbf{dinamica}: coda di task con le righe come unità indivisibili.
+    Nel caso ideale nessuna unità resta inattiva finché c'è lavoro, e il makespan
+    è limitato soltanto dalla quota equa e dalla riga più pesante:
+    \[
+        M(p) = \tau\,\max\!\left(\frac{\mathcal{W}}{p},\; \max_r w_r\right).
+    \]
+\end{itemize}
+
+I valori di $\lambda_p$ e dei limiti sono riportati nella
+sezione~\ref{sec:serial-pred-lambdaP} e confrontati con gli speedup misurati
+nella sezione~\ref{sec:validazione-previsioni}: è questo confronto a collegare
+la baseline alle implementazioni parallele. La versione CUDA, che opera a
+granularità di pixel, ha invece un predittore ricavato dalla matrice degli
+escape time (sezione~\ref{sec:cuda-previsioni}).
+
+% Collocata qui, e non nella sezione Frattali, perché la motivazione della
+% scelta (disattivare le due ottimizzazioni per non alterare il profilo di
+% carico) si regge su lambda e CoV, definiti sopra in \ref{sec:profilo-carico}:
+% è la scelta metodologica della baseline, non un dettaglio dell'algoritmo.
+% Resta il bersaglio del rimando di fine sezione Frattali.
+\subsection{Ottimizzazioni avanzate disponibili e scelta della baseline}
+\label{sec:ottimizzazioni}
+L'algoritmo di escape-time ammette due ottimizzazioni strutturali che
+sfruttano proprietà analitiche dell'insieme.
+
+La prima è un \emph{pre-screening geometrico}: cardioide principale e bulbo di
+periodo~2 ammettono formule chiuse che permettono di classificare un punto come
+interno prima di entrare nel ciclo iterativo, eliminando le $8\,N_{\max}$
+operazioni in virgola mobile che ciascuno di quei punti eseguirebbe.
+
+La seconda è lo \emph{sfruttamento della simmetria assiale}: l'insieme è
+simmetrico rispetto all'asse reale, per cui ogni punto $c = x_0 + iy_0$
+e il suo coniugato $\bar{c} = x_0 - iy_0$ hanno lo stesso tempo di
+fuga. Se il viewport è simmetrico rispetto a $y = 0$, è sufficiente
+calcolare la metà superiore della griglia e copiare per riflessione,
+dimezzando il lavoro effettivo.
+
+Entrambe sono implementate e attivabili a tempo di compilazione
+(\texttt{USE\_PRUNING}, \texttt{USE\_SYMMETRY}), ma restano \emph{disattivate}
+in tutti i benchmark. Con il pre-screening la matrice registrerebbe $N_{\max}$
+per punti mai iterati, e $\mathcal{W}$ non misurerebbe più il lavoro eseguito;
+con la simmetria metà delle righe sarebbe copiata invece che calcolata. In
+entrambi i casi il profilo $\{w_r\}$ non rifletterebbe più il costo reale, e
+$\lambda$, $\mathrm{CoV}$ e le previsioni che ne derivano perderebbero
+significato proprio sul fenomeno che si intende studiare.
+
+% Collocata a chiusura del framework metodologico, e non nella sezione
+% seriale: definisce che cosa È l'artefatto di riferimento e PERCHÉ la
+% riproducibilità conta per tutte e quattro le implementazioni, non come
+% si configura la sola misura seriale.
+\subsection{Artefatto di riferimento e riproducibilità}
+\label{sec:artefatto}
+L'artefatto di riferimento dell'analisi è la matrice dei tempi di fuga
+$n_{i,j}$ e non l'immagine renderizzata: l'oggetto di studio è il
+kernel che determina l'escape, mentre la colorazione è una scelta a
+valle, ininfluente sulle prestazioni. Per questo l'immagine non viene
+rigenerata a ogni esecuzione, ma prodotta solo su richiesta esplicita
+(\texttt{-{}-ppm}, \texttt{-{}-pgm}, \texttt{-{}-raw}); la finestra di
+cronometraggio esclude ogni scrittura su disco, in modo che l'overhead
+di I/O non contamini la misura del calcolo puro.
+
+Questa scelta motiva un requisito di correttezza preciso: le quattro
+implementazioni sviluppate in questo lavoro --- baseline sequenziale,
+OpenMP, MPI e CUDA --- calcolano tutte la stessa matrice $n_{i,j}$ a
+partire dagli stessi input, e devono perciò produrre risultati
+bit-a-bit identici. La verifica avviene tramite un checksum FNV-1a a 64 bit
+calcolato sull'intera matrice: \textit{a parità di input} tutte le
+implementazioni devono restituire lo stesso valore, e anche un solo conteggio
+diverso produce, in pratica, un checksum diverso.
+
+La riproducibilità bit-a-bit è garantita imponendo la semantica
+IEEE~754 stretta in fase di compilazione
+(\texttt{-ffp-contract=off}, e il corrispettivo \texttt{-{}-fmad=false}
+per \texttt{nvcc}), con esplicita esclusione di \texttt{-ffast-math} e
+più in generale delle ottimizzazioni che alterano l'ordine delle
+operazioni in virgola mobile: per i pixel prossimi al bordo, anche la
+differenza di un solo ULP in un risultato intermedio può modificare di
+$\pm 1$ il conteggio di iterazioni, e dunque il checksum. I flag di
+compilazione sono definiti in \repofile{mandelbrot/src/Makefile}, il
+checksum in \repofile{mandelbrot/src/image_io.cpp}.

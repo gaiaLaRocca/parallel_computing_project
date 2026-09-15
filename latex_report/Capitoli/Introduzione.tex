@@ -1,0 +1,88 @@
+\section{Introduzione}
+
+Il presente elaborato si propone di condurre un'analisi comparativa delle prestazioni ottenibili parallelizzando un medesimo problema computazionale mediante i tre paradigmi affrontati nel corso: la programmazione a memoria condivisa con OpenMP, la programmazione a memoria distribuita con MPI e la programmazione su acceleratori grafici con CUDA.
+L'obiettivo non è ridurre il tempo di esecuzione né competere con le implementazioni di riferimento,
+bensì misurare e interpretare in modo rigoroso il comportamento di ciascun paradigma,
+mettendo in relazione i risultati sperimentali con i modelli analitici del calcolo parallelo.
+
+Come caso di studio è stato scelto il calcolo dell'\textit{\textbf{insieme di Mandelbrot}}. La scelta non è casuale.
+Il valore di ciascun pixel dipende esclusivamente dalle proprie coordinate, e il problema è quindi \textit{\textbf{imbarazzantemente parallelo}} (embarrassingly parallel):
+i pixel possono essere calcolati in totale indipendenza, senza che le unità di calcolo debbano scambiarsi dati.
+Questa apparente semplicità nasconde tuttavia una difficoltà tutt'altro che trascurabile: il costo del singolo pixel dipende dal
+numero di iterazioni necessarie a determinarne l'appartenenza all'insieme.
+I punti interni raggiungono il limite massimo di iterazioni, mentre quelli esterni divergono, e quindi terminano, per lo più dopo pochi passi.
+La distribuzione del carico che ne risulta è fortemente disomogenea, e non è nota prima di aver calcolato l'immagine almeno una volta.
+
+È questa irregolarità a costituire il nucleo analitico dell'elaborato. La tesi che attraversa l'intero lavoro
+è che un'unica causa, la variabilità del numero di iterazioni per pixel, si manifesti in forme diverse a seconda dell'architettura.
+Sulla CPU si presenta come sbilanciamento del carico (load imbalance) fra i thread o i processi che si spartiscono l'immagine.
+Sulla GPU invece si presenta come divergenza dei warp (warp divergence): i thread eseguiti insieme in uno stesso gruppo, il warp, terminano solo quando termina il più lento.
+Riconoscere questa radice comune permette di trattare i tre esperimenti non come esercizi scollegati, ma come approcci alternativi a un medesimo problema.
+
+Le prestazioni di ciascun paradigma sono misurate con metriche consolidate: speedup ed efficienza,
+affiancati dalle leggi di scalabilità e da indici di sbilanciamento ricavati dal profilo di carico seriale.
+La legge di Amdahl fornisce il limite allo speedup imposto dalla frazione seriale del programma, mentre la metrica di Karp–Flatt,
+osservata al crescere del grado di parallelismo, aiuta a distinguere se la perdita di efficienza derivi da una componente
+seriale oppure dallo sbilanciamento del carico e dalla comunicazione.
+
+Proprio perché privo di comunicazione, tuttavia, il calcolo dell'insieme di Mandelbrot non sollecita
+il regime in cui le prestazioni sono dominate dallo scambio e dalla sincronizzazione dei dati.
+Un complemento naturale sarebbe il Buddhabrot, che condivide la stessa iterazione. Anziché però scrivere un solo pixel per punto,
+il Buddhabrot incrementa lungo l'orbita di ciascun punto divergente numerose celle di un istogramma condiviso, introducendo contesa sulla memoria.
+Non è stato affrontato in questo lavoro, e viene ripreso fra gli sviluppi (sezione~\ref{sec:conclusioni}).
+
+Quanto ai confini del lavoro, l'elaborato non offre una trattazione della geometria frattale né dei fondamenti matematici dell'insieme: la sezione~\ref{sec:frattali} li richiama solo nella misura in cui spiegano l'origine dell'irregolarità del carico.
+Sul piano sperimentale, le misure dipendono dalle risorse di calcolo disponibili, descritte nella sezione~\ref{sec:ambiente}. I valori assoluti contano quindi meno degli andamenti e del confronto fra paradigmi, e particolare cura è dedicata alla metodologia di misura e alla riproducibilità dei risultati.
+
+\subsection{Ambiente sperimentale}
+\label{sec:ambiente}
+
+Tutte le misure sono state eseguite come job batch su un cluster HPC gestito
+dallo scheduler SLURM (versione $23.11.6$), con sistema operativo Rocky
+Linux~$8.9$. Si riportano di seguito le caratteristiche dell'ambiente che
+incidono sulla progettazione degli esperimenti e sull'interpretazione dei
+risultati.
+
+\paragraph{Nodo di calcolo.}
+L'utenza impiegata è abilitata a tre partizioni (\texttt{ulow},
+\texttt{only-one-gpu} e \texttt{ice4hpc}), tutte associate al medesimo nodo,
+\texttt{gnode01}; le campagne CPU sono eseguite su \texttt{ulow}, quelle GPU su
+\texttt{only-one-gpu}. Il nodo monta due processori AMD EPYC~9354 (architettura
+Zen~4) da $32$ core ciascuno, con estensioni AVX2 e AVX-512. Il simultaneous
+multithreading è disattivato, per cui i $64$ core visibili al sistema
+coincidono con i core fisici. Ogni socket costituisce un nodo NUMA con circa
+$377$~GiB di memoria, per un totale di $755$~GiB; il sistema riporta per
+l'accesso alla memoria dell'altro socket un costo relativo di $32$, contro $10$
+per la memoria locale.
+
+Da questa configurazione discendono tre conseguenze. Nessuna esecuzione può
+estendersi su più nodi, per cui anche MPI opera su memoria condivisa
+(sezione~\ref{sec:mpi}). Il tempo seriale $T_1$ e i tempi paralleli
+$T_\parallel(p)$ sono misurati per costruzione sullo stesso hardware. Il nodo è
+infine condiviso con i job di altri utenti: la partizione non prevede
+preemption né condivisione dei core allocati, ma banda di memoria e cache di
+ultimo livello restano contese, ed è per questa ragione che ogni configurazione
+viene ripetuta e se ne riporta il tempo minimo.
+
+\paragraph{Acceleratore grafico.}
+Il nodo ospita otto schede NVIDIA L40S, ma la partizione dedicata alla GPU ne
+assegna una sola per job: tutte le misure CUDA si riferiscono pertanto a una
+singola scheda. La scheda ha architettura Ada Lovelace, compute capability
+$8.9$ e $46\,068$~MiB di memoria rilevati da \texttt{nvidia-smi}; opera con il
+driver $545.23.08$ ed è collegata all'host tramite un link PCIe~4.0~x16.
+L'accesso ai performance counter della GPU è riservato agli amministratori, e le
+misure con il profiler \texttt{ncu} restituiscono l'errore
+\texttt{ERR\_NVGPUCTRPERM}: la divergenza dei warp, che richiederebbe un
+profiler, è quindi stimata con un proxy deterministico
+(sezione~\ref{sec:cuda-metriche}).
+
+\paragraph{Software.}
+Il compilatore è GCC $8.5.0$, fornito dal sistema; MPI è OpenMPI $4.1.6$ e CUDA
+è il toolkit $12.3.2$, mantenuto invariato per l'intera campagna, poiché un
+toolkit diverso produrrebbe un binario diverso e tempi GPU non confrontabili.
+Ogni job compila i sorgenti sul nodo di calcolo prima di misurare: il build usa
+\texttt{-march=native}, e una compilazione eseguita altrove produrrebbe codice
+ottimizzato per una CPU diversa da quella su cui si misura. I rank MPI sono
+lanciati con \texttt{mpirun} anziché con \texttt{srun}, a causa di
+un'incompatibilità fra il client PMIx di OpenMPI $4.1.6$ e il server PMIx
+esposto da SLURM (sezione~\ref{sec:mpi-codice}).

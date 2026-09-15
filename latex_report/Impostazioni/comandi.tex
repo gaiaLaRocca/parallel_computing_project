@@ -1,0 +1,53 @@
+%\newcounter{AlgorithmCounter}[chapter] % defines algorithm counter for chapter-level
+\newcounter{AlgorithmCounter}[section]
+%\renewcommand{\theAlgorithmCounter}{\thechapter .\arabic{AlgorithmCounter}} %defines appearance of the algorithm counter
+\renewcommand{\theAlgorithmCounter}{\thesection.\arabic{AlgorithmCounter}}
+\DeclareCaptionLabelFormat{algocaption}{Algoritmo \theAlgorithmCounter} % defines a new caption label as Algorithm x.y
+
+\lstnewenvironment{algorithm}[2][] %defines the algorithm listing environment
+{   
+    \refstepcounter{AlgorithmCounter} %increments algorithm number
+    \captionsetup{labelformat=algocaption,labelsep=colon,font={normalsize}} %defines the caption setup for: it ises label format as the declared caption label above and makes label and caption text to be separated by a ':'
+    \lstset{ %this is the stype
+        backgroundcolor = \color{white},
+        mathescape=true,
+        frame=tb,
+        numberstyle=\small, 
+        basicstyle=\footnotesize\rmfamily,
+        numbers=left,
+        keywordstyle=\color{black}\bfseries,
+        keywords={, for, input, output, return, for, and, or, to, datatype, function, goto, in, if, else, foreach, while, begin, end, print, import} %add the keywords you want, or load a language as Rubens explains in his comment above.
+        numbers=left,
+        xleftmargin=.04\textwidth,
+        linewidth=.99\textwidth,
+        #2}
+}{}% this is to add specific settings to an usage of this environment (for instance, the caption and referable label)
+
+% Environment for algorithmic pseudocode with styled background.
+% #1 = caption text
+\newenvironment{pseudocode}{%
+    \begin{tcolorbox}[
+        colback=codebackground,
+        colframe=codebackground,
+        boxrule=0pt,
+        arc=3pt,
+        top=4pt, bottom=4pt, left=6pt, right=6pt,
+    ]%
+}{%
+    \end{tcolorbox}%
+}
+
+\newcounter{checksumfootnote}
+
+% Repository del progetto: unico punto in cui sono definiti URL e versione
+% citati nel testo. I link usano l'hash completo; il testo ne mostra la forma
+% breve, che non esce dal margine.
+\newcommand{\repourl}{https://github.com/gaiaLaRocca/parallel_computing_project}
+\newcommand{\repocommit}{b386d1234ba5294c85c2cfb3b3fb49f70766da0f}
+\newcommand{\repocommitshort}{b386d12}
+% Link alla home del repository e alla versione citata.
+\newcommand{\repolink}{\href{\repourl}{\texttt{github.com/gaiaLaRocca/parallel\_computing\_project}}}
+\newcommand{\repoversion}{\href{\repourl/tree/\repocommit}{\texttt{\repocommitshort}}}
+% \repofile{percorso}: link al file nella versione citata, es.
+% \repofile{mandelbrot/src/mandelbrot_omp.cpp}.
+\newcommand{\repofile}[1]{\href{\repourl/blob/\repocommit/#1}{\texttt{\detokenize{#1}}}}

@@ -1,0 +1,179 @@
+\section{Conclusioni}
+\label{sec:conclusioni}
+
+L'elaborato si era proposto di confrontare OpenMP, MPI e CUDA sullo stesso
+problema, misurandone il comportamento con metriche consolidate e mettendo in
+relazione i risultati con i modelli analitici del calcolo parallelo. La tesi
+formulata nell'introduzione era che un'unica causa, la variabilità del numero di
+iterazioni per pixel, si manifestasse in forme diverse a seconda
+dell'architettura: come sbilanciamento del carico fra thread e processi sulla
+CPU, come divergenza dei warp sulla GPU. Le sezioni che seguono riassumono che
+cosa le misure hanno confermato, che cosa hanno smentito e che cosa è emerso
+sul problema.
+
+\subsection{Il problema: un'irregolarità misurabile prima di parallelizzare}
+
+La baseline seriale ha mostrato che il costo per iterazione è costante entro
+l'$1{,}3\%$ su tutte le configurazioni misurate: il tempo seriale è proporzionale
+al numero totale di iterazioni $\mathcal{W}$, che si può quindi usare al posto del
+tempo per ragionare sul lavoro. Il profilo di carico per riga è fortemente
+irregolare ($\lambda \approx 2{,}76$, $\mathrm{CoV} \approx 0{,}97$), e questa
+irregolarità dipende dalla geometria dell'insieme più che dalla soglia iterativa:
+portando $N_{\max}$ da $500$ a $5000$, $\lambda$ cresce del $2{,}9\%$, mentre il
+lavoro cresce di un fattore $9{,}57$ e solo lo $0{,}116\%$ dei pixel cambia
+classificazione.
+
+La conseguenza metodologica è il risultato più generale del lavoro: il profilo
+di carico e la matrice degli escape time, ottenuti da una sola esecuzione
+seriale, bastano a formulare previsioni quantitative sulle versioni parallele
+prima di scriverle. Sulla CPU queste previsioni si sono rivelate accurate; sulla
+GPU descrivono correttamente il lavoro, ma non il tempo.
+
+\subsection{CPU: la regola di assegnamento decide lo speedup}
+
+Sulla CPU le previsioni ricavate dal solo profilo seriale sono state confermate
+(sezione~\ref{sec:validazione-previsioni}): $19$ dei $25$ punti di misura
+rientrano nell'$1\%$ del limite predetto. I sei restanti, tutti a $p \ge 16$, se
+ne discostano fra il $2{,}6$ e l'$8{,}5\%$, per costi che il modello non include.
+La regola a blocchi, realizzata con \texttt{schedule(static)}, raggiunge il
+proprio limite entro lo $0{,}6\%$: la perdita del $62\%$ di efficienza a $32$
+thread è dovuta quasi per intero alla contiguità delle righe costose, che
+finiscono nello stesso blocco. Cambiando soltanto la regola, senza aggiungere
+comunicazione, la decomposizione ciclica resta entro l'$1\%$ dall'ideale fino a
+$8$ processi; a $16$ e $32$ se ne allontana, per una causa ancora da verificare.
+Le regole dinamiche a grana fine arrivano a $S = 30{,}99$ (OpenMP
+\texttt{dynamic,1}) e $S = 31{,}10$ (MPI master--worker) su $32$ unità. Nello
+sweep MPI il rapporto fra lo speedup peggiore (block) e il migliore
+(master--worker) è $2{,}66$, pari allo sbilanciamento $\lambda_{32}$ previsto per
+i blocchi.
+
+Il dato che accomuna i due paradigmi è che la previsione dipende dalla
+\emph{regola} e non dal meccanismo che la realizza: una clausola
+\texttt{schedule(static)} in memoria condivisa e una decomposizione esplicita con
+gather in memoria distribuita cadono sullo stesso limite entro l'$1\%$ fino a
+$p = 16$. Anche il confronto fra i due scheduler dinamici lo conferma: fino a
+$p = 16$ il passaggio da memoria condivisa a scambio di messaggi costa meno del
+$2\%$.
+
+\subsection{GPU: la stessa irregolarità pesa poco sul tempo}
+
+Una sola L40S calcola l'immagine di riferimento $128$ volte più velocemente di un
+core e $4{,}11$ volte più velocemente del miglior risultato CPU, il master--worker
+MPI su $32$ unità. Tutte le geometrie del blocco riproducono il checksum della
+baseline, e la geometria stessa si è rivelata una leva di second'ordine: fra la
+più veloce e la più lenta corre l'$8{,}2\%$.
+
+Le grandezze calcolabili dalla matrice degli escape time sono esatte, ma spiegano
+poco delle differenze di tempo. L'occupancy vale $1$ per tutte le geometrie,
+perché il kernel non esaurisce i registri. La perdita di coalescenza non comporta
+una penalità misurabile: la $1{\times}256$, che la subisce, è la geometria più
+veloce, e il traffico di memoria resta sotto il $3\%$ della banda anche nel caso
+peggiore. Una riduzione prevista del $7{,}2\%$ dei cicli eseguiti si traduce in
+un guadagno misurato dello $0{,}4\%$. L'unica differenza riconducibile alla
+distribuzione del carico è quella fra le geometrie orizzontali pure, circa il
+$5\%$, interpretata come effetto della granularità con cui il lavoro si
+ripartisce fra gli SM. L'irregolarità del carico, che sulla CPU spiega quasi per
+intero le prestazioni, sulla GPU ne spiega quindi soltanto pochi punti
+percentuali.
+
+Lo Sweep~B aggiunge tre elementi. La scheda si satura da circa $2048^2$ pixel,
+dove il throughput si stabilizza attorno a $440$~GFLOP/s e lo speedup rispetto a
+un core a $152$. Alle taglie inferiori il rendimento cala, e né il trasferimento
+né un costo fisso di lancio bastano a spiegarlo: il calo è compatibile con il
+sottoutilizzo degli SM, che senza performance counter non è stato possibile
+verificare. La copia dei risultati pesa fra lo $0{,}8$ e il $7{,}1\%$ del tempo e
+si ammortizza al crescere di $N_{\max}$. Infine, la posizione del processo
+rispetto alla GPU non è garantita: nel job misurato la copia attraversava i due
+socket e raggiungeva una banda asintotica di circa $24$~GB/s, tre quarti di
+quella nominale del PCIe, senza che fosse possibile isolare il contributo del
+passaggio fra i socket.
+
+\subsection{Le ipotesi iniziali alla prova dei dati}
+
+\paragraph{La tesi dell'unica causa.}
+È confermata come principio che organizza l'intero lavoro, ma con un peso molto
+diverso nei due casi. Sulla CPU la variabilità degli escape time determina lo
+speedup, e lo fa in modo prevedibile: le regole statiche saturano il limite
+predetto entro lo $0{,}6\%$, e gli scostamenti maggiori corrispondono a costi
+esterni al modello. Sulla GPU la stessa variabilità è misurabile come divergenza
+dei warp, ma il suo effetto sul tempo è marginale nell'intervallo esplorato.
+Anche la conclusione più suggestiva, che la stessa causa richieda rimedi opposti
+--- mescolare il carico sulla CPU, raggruppare pixel simili sulla GPU --- resta
+per la GPU una previsione del modello: il raggruppamento sparso non è
+realizzabile con una forma di blocco e non è stato misurato, e lo Sweep~A indica
+che il tempo è poco sensibile ai cicli dei warp.
+
+\paragraph{Amdahl e Karp--Flatt.}
+La legge di Amdahl, con una frazione seriale trascurabile, prevede uno speedup
+quasi ideale e da sola non spiega le perdite osservate. La metrica di
+Karp--Flatt le segnala correttamente, ma non misura una frazione seriale: per la
+regola a blocchi $e(p)$ decresce con $p$ e segue la forma
+$(\lambda_p-1)/(p-1)$, cioè lo sbilanciamento riscritto in un'altra variabile. È
+diagnostico il suo andamento, più che il suo valore: una $e(p)$ decrescente
+indica uno sbilanciamento il cui limite cresce con $p$, una crescente un limite
+fisso, come la granularità o la contesa sulla coda.
+
+\paragraph{Andamenti più che valori assoluti.}
+L'introduzione aveva anticipato che i valori assoluti, legati alle risorse
+disponibili, contassero meno degli andamenti. I risultati lo confermano. Le
+previsioni sulla CPU sono rapporti, e non dipendono dal valore di $T_1$. Le sei
+baseline seriali dei diversi job concordano entro lo $0{,}8\%$, e due schede
+L40S fisicamente diverse hanno dato tempi entro lo $0{,}7\%$: nessuna di queste
+differenze modifica le conclusioni.
+
+\subsection{Risultati inattesi}
+
+Alcuni risultati non erano previsti, e sono fra i più istruttivi.
+\begin{itemize}
+    \item \textbf{La granularità può annullare il bilanciamento dinamico.}
+    \texttt{dynamic,64} si ferma a $S = 6{,}17$ già da $8$ thread: con soli $16$
+    chunk il tempo non può scendere sotto quello del chunk più pesante, e lo
+    scheduling dinamico eredita il limite di una decomposizione statica a $16$
+    blocchi.
+    \item \textbf{Una politica adattiva può lavorare contro il problema.}
+    \texttt{guided} perde circa il $31\%$ di efficienza a ogni grado di
+    parallelismo, perché assegna blocchi contigui grandi proprio all'inizio,
+    quando il carico andrebbe compensato.
+    \item \textbf{Il modello di memoria pesa poco.} A $32$ unità il master--worker
+    MPI è più veloce dello scheduler dinamico di OpenMP dell'$1{,}1\%$; la contesa
+    sulla coda condivisa di OpenMP è una spiegazione plausibile, non verificata.
+    A parità di core allocati, però, OpenMP torna avanti di circa il $2\%$.
+    \item \textbf{Uno speedup superlineare solo apparente.} A $p = 2$ tutte le
+    politiche OpenMP superano di poco lo speedup ideale ($S \approx 2{,}011$). La
+    causa è la variabilità di $T_1$ fra job distinti: la baseline di un altro job,
+    più veloce di $3{,}3$~ms, riporta lo speedup a $2{,}002$. Per questo ogni
+    misura è riferita alla baseline del proprio job, misurata sul nodo nello
+    stesso stato.
+    \item \textbf{Sulla GPU le leve attese spiegano poco.} Occupancy, coalescenza
+    e divergenza, individuate in fase di progettazione come fattori determinanti,
+    non spiegano le differenze di tempo fra le geometrie. Restano aperti il
+    primato della geometria $1{\times}256$ e il ritardo delle forme
+    bidimensionali coalescenti, che senza accesso ai performance counter non è
+    stato possibile indagare.
+\end{itemize}
+
+\subsection{Limiti e sviluppi}
+
+I risultati vanno letti alla luce dell'ambiente di esecuzione
+(sezione~\ref{sec:ambiente}). Tutte le misure provengono da un unico nodo: MPI è
+stato eseguito su memoria condivisa, e la frazione di comunicazione misurata, mai
+superiore al $3{,}4\%$, è un limite inferiore ottimistico rispetto a
+un'esecuzione distribuita, nella quale il master--worker potrebbe perdere il
+vantaggio sul ciclico. Il nodo è condiviso con altri utenti, e il minimo sulle
+ripetizioni ne ha assorbito il rumore; anche la posizione del processo rispetto
+alla GPU dipende dall'assegnazione di SLURM e non è controllabile. Sulla GPU tutte
+le misure usano una sola scheda. La doppia precisione, imposta dalla
+riproducibilità, colloca il kernel su un picco nominale $64$ volte inferiore a
+quello FP32; i picchi, inoltre, sono documentati per la L40 e non misurati.
+L'impossibilità di accedere ai performance counter impedisce infine di spiegare
+i risultati residui.
+
+Restano come sviluppi naturali il Buddhabrot, proposto nell'introduzione per
+osservare il regime dominato dalla contesa sulla memoria condivisa, e non
+affrontato; le versioni ibride, che combinano MPI con OpenMP o con CUDA; un
+esperimento in singola precisione, per quantificare il compromesso fra
+precisione e throughput; la misura diretta del costo di riordino nella
+decomposizione ciclica MPI, insieme alla rimisura del punto a $p=16$; l'accesso
+ai performance counter, per indagare le due questioni aperte dello Sweep~A; e
+un'esecuzione su più nodi, che darebbe alla frazione di comunicazione il suo
+valore reale.

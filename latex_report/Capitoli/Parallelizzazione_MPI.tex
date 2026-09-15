@@ -1,0 +1,512 @@
+% Sezione completa: sweep eseguito (job 34137, gnode01, 2026-09-09), dati in
+% mandelbrot/data/run_34137.csv e mandelbrot/data/merged.csv.
+% I limiti p/lambda_p provengono da mandelbrot/data/block_imbalance.csv.
+\subsection{MPI: memoria distribuita}
+\label{sec:mpi}
+
+Il passaggio a MPI cambia il vincolo fondamentale, non la decomposizione. La
+grana resta la riga, per le stesse ragioni della sezione~\ref{sec:openmp}, ma i
+processi non condividono più uno spazio di indirizzamento: ciascun rank possiede
+una propria copia parziale della matrice degli escape time, e il risultato
+completo esiste solo dopo un atto esplicito di comunicazione. Ne discendono le
+due differenze che governano l'intera sottosezione. Primo, la matrice va
+\emph{assemblata}: nei due schemi statici con una \texttt{MPI\_Gatherv} finale
+su rank $0$, nello schema dinamico incrementalmente, riga per riga, man mano che
+i risultati arrivano. Secondo, e più importante, il ribilanciamento del carico
+non è più gratuito: sotto OpenMP un thread inattivo prelevava lavoro da una coda
+in memoria condivisa a costo trascurabile, mentre qui ogni atto di
+ridistribuzione è un messaggio, potenzialmente attraverso la rete. È questo
+prezzo a rendere il confronto fra schemi la vera domanda del paradigma.
+
+Il parallelismo resta quello per righe, ma l'unità è ora il processo e non il
+thread; il numero di unità di calcolo è spazzato sugli stessi valori
+($2, 4, 8, 16, 32$) usati per OpenMP, e griglia e $N_{\max}$ restano fissi
+($1024^2$, $1000$), così che il confronto fra paradigmi avvenga sullo stesso
+carico di lavoro. Non si sfrutta la simmetria, coerentemente con tutti gli altri
+benchmark di scaling: dimezzerebbe il lavoro senza cambiare la matrice
+risultante, ma renderebbe metà delle righe una copia anziché un calcolo,
+falsando il profilo $\{w_r\}$ su cui poggia l'intera analisi di sbilanciamento.
+
+% ============================================================
+\subsubsection{Design dello sweep}
+\label{sec:mpi-sweep}
+% ============================================================
+
+La domanda progettuale non è quanto parallelizzare, ma \emph{con quale regola
+assegnare le righe ai rank}. A differenza di OpenMP, dove la scelta era fra
+politiche di scheduling dello stesso pool di thread, qui le regole differiscono
+anche nel volume di comunicazione che generano: è possibile bilanciare meglio
+pagando più messaggi, oppure bilanciare altrettanto bene senza aggiungerne.
+Questo asse è ciò che i tre schemi esplorano.
+
+\paragraph{\texttt{block}.}
+Il rank $r$ possiede un intervallo contiguo di $H/p$ righe. La
+distribuzione è nota a tutti prima di iniziare: non esiste dialogo, e la
+comunicazione si riduce a un'unica \texttt{MPI\_Gatherv} finale. Poiché, per la
+viewport scelta, il corpo del frattale occupa le righe centrali della griglia e
+le righe di bordo contengono solo punti esterni che sfuggono in poche
+iterazioni, i rank centrali concentrano quasi tutto il lavoro. La riga più
+leggera è la riga $0$ ($2\,281$ iterazioni totali, circa $2$ per pixel) e la
+più pesante la riga $511$, al centro ($700\,806$, circa $684$ per pixel): un
+rapporto di $307\times$. I rank che ricevono il primo e l'ultimo blocco sono
+necessariamente veloci per costruzione; i rank centrali portano da soli la
+maggior parte del lavoro. È il caso di massimo sbilanciamento con comunicazione
+minima, e il suo limite $S \le p/\lambda_p$ è calcolabile dal solo profilo
+seriale prima ancora che il codice MPI esista.
+
+\paragraph{\texttt{cyclic}.}
+La riga $r$ va al rank $r \bmod p$. Ogni rank riceve righe sparse su tutta
+l'immagine --- un po' di bordo, un po' di centro --- e il carico si media da sé,
+perché il pattern di fuga varia su una scala spaziale molto più grande della
+singola riga. L'assegnazione resta \emph{statica}: ogni rank sa già quali righe
+possiede, non esiste coda residua, e la comunicazione è la stessa unica gather
+del block --- a meno di un riordino locale su rank $0$ per de-interlacciare il
+buffer, che non è un messaggio ma non è nemmeno gratuito, come mostreranno i
+risultati.
+
+Ciò che rende il cyclic interessante non è soltanto che batta il block: è che
+\emph{esce dall'asse} bilanciamento--comunicazione su cui si trova il dinamico.
+Lungo quell'asse, ridurre il chunk avvicina al bilanciamento ma moltiplica i
+messaggi; il cyclic ottiene un bilanciamento quasi equivalente al dinamico con
+zero messaggi aggiuntivi, perché è l'interlacciamento statico a mediare il
+carico, non la coordinazione a runtime. La domanda aperta che l'esperimento deve
+rispondere è se questo vantaggio sia sufficiente a battere o pareggiare il
+master--worker nonostante il riordino.
+
+\paragraph{\texttt{dynamic} (master--worker).}
+Il rank $0$ non calcola nulla: tiene le righe non distribuite come coda di
+lavoro, innesca ciascun worker con una riga e poi alimenta con la successiva il
+primo worker che riporta un risultato. L'assegnazione si adatta al costo reale
+di ogni riga --- chi è bloccato su una riga pesante semplicemente non viene
+rifornito --- e il bilanciamento è perfetto per costruzione. Il prezzo è una
+coppia di messaggi richiesta/risposta per ogni riga. Questo schema è il limite
+opposto al block: bilanciamento massimo, overhead di comunicazione massimo.
+
+È importante notare che, al crescere del chunk, il master--worker non degenera
+nel cyclic ma nel block: con chunk pari a $H/p$ righe, dove $p$ è il numero di
+worker, ogni worker riceve un unico
+blocco contiguo, che è esattamente la decomposizione a blocchi contigui. Il
+cyclic non è un punto sull'asse chunk--overhead: è un meccanismo ortogonale che
+non occupa alcuna posizione su quell'asse.
+
+\paragraph{Grana della concessione e conteggio delle unità.}
+La concessione è fissata a una riga, senza sweep sul chunk, per tre ragioni.
+Un chunk intermedio si colloca fra estremi già misurati: comunica più del
+cyclic, che non aggiunge messaggi, e bilancia meno del chunk unitario. In secondo luogo l'estremo è il
+punto più informativo: accoppia il miglior bilanciamento possibile con il massimo
+costo di coordinamento, ed è precisamente il confronto che lo schema esiste per
+esporre. Infine l'asse del chunk è già spazzato dove costa poco, nei run OpenMP
+\texttt{dynamic,\{1,16,64\}}; tenendo il chunk unitario da entrambi i lati, i
+due scheduler dinamici diventano la stessa politica su due modelli di memoria
+diversi, e il loro divario isola il costo del passaggio di messaggi rispetto
+all'incremento di un contatore condiviso.
+
+Poiché il master non calcola, per lo schema dinamico $p$ indica il numero di
+\emph{worker} e non di processi: gli sweep girano su $np \in \{3, 5, 9, 17,
+33\}$ per mantenere le unità di calcolo a $\{2, 4, 8, 16, 32\}$, allineate agli
+altri schemi e ai thread OpenMP. Va dichiarato che la contabilità è leggermente
+generosa verso il master--worker: il cluster alloca $p+1$ core, uno dei quali
+non calcola; speedup ed efficienza sono per unità di calcolo, e il costo reale
+in risorse è $p+1$ processi.
+
+% ============================================================
+\subsubsection{Metriche specifiche}
+\label{sec:mpi-metriche}
+% ============================================================
+
+Alle metriche comuni della sezione~\ref{sec:metriche-comuni} MPI aggiunge una
+grandezza propria: la \emph{frazione di comunicazione}, cioè la quota di $T_\parallel(p)$
+spesa a muovere dati anziché a calcolare. È la metrica che dà corpo al costo
+introdotto dalla memoria distribuita, e la sua definizione operativa differisce
+fra schemi statici e dinamico.
+
+Negli schemi statici la comunicazione è un unico \texttt{MPI\_Gatherv} finale, e
+il suo tempo è misurato \emph{dopo} una barriera. La scelta è deliberata: senza
+barriera il rank in ritardo farebbe apparire dentro la gather l'attesa dovuta
+allo sbilanciamento, gonfiando \texttt{comm\_fraction} con un tempo che non è
+trasferimento di dati. Con la barriera l'inattività resta parcheggiata prima
+dell'operazione --- e comunque dentro la regione cronometrata, quindi $T_\parallel(p)$
+resta onesto --- mentre \texttt{comm\_fraction} misura solo movimento genuino di
+dati. Lo sbilanciamento è riportato altrove, da $\lambda_p$ e dallo speedup; e
+tenere le due cose separate è ciò che rende leggibile il confronto.
+
+Nello schema dinamico la definizione è necessariamente diversa. Il master
+comunica il $100\%$ del tempo per costruzione --- è la sua sola funzione ---
+quindi il suo tempo non direbbe nulla sulla frazione di coordinamento pagata
+\emph{dal calcolo}. Si misura invece, per ciascun worker, la frazione del proprio
+tempo trascorsa dentro le chiamate MPI: l'invio del risultato di una riga e
+l'attesa bloccante del comando successivo. Questa attesa è inclusa
+deliberatamente, perché contiene sia la latenza del messaggio sia la contesa
+quando più worker riportano insieme --- che è precisamente il prezzo della
+coordinazione dinamica. Il valore medio dei worker è raccolto con una
+\texttt{MPI\_Reduce} su rank $0$ e riportato come \texttt{comm\_fraction}. È
+l'unico degli schemi per cui questa colonna diventa una metrica significativa:
+negli statici la frazione è attesa prossima a zero e serve come controllo, nel
+dinamico è il numero che quantifica il costo del self-scheduling.
+
+% ============================================================
+\subsubsection{Frammenti di codice rilevanti}
+\label{sec:mpi-codice}
+% ============================================================
+
+Come per OpenMP, un solo binario copre tutti gli schemi: la variabile d'ambiente
+\texttt{MPI\_DECOMP} seleziona a esecuzione fra \texttt{block}, \texttt{cyclic}
+e \texttt{dynamic} (default \texttt{block}), e il job passa l'etichetta
+corrispondente a \texttt{-{}-schedule} per il CSV. Il codice completo del kernel
+si trova nel file \repofile{mandelbrot/src/mandelbrot_mpi.cpp}, mentre lo strato
+driver descritto più avanti si trova nel file \repofile{mandelbrot/src/main.cpp}.
+
+La differenza fra i due schemi statici è una sola espressione --- quale riga
+globale corrisponda all'$i$-esima riga locale:
+
+\begin{verbatim}
+// block:  global row = row_displs[rank] + i   (contiguous range)
+// cyclic: global row = rank + i*size          (strided)
+const int row = (decomp == Decomp::Block) ? (row_displs[rank] + i)
+                                          : (rank + i * size);
+\end{verbatim}
+
+È il frammento più significativo della sottosezione: il cyclic ottiene gran
+parte del bilanciamento del master--worker cambiando un indice. I conteggi di
+righe per rank sono identici nei due casi (\texttt{base} righe ciascuno, le
+prime \texttt{rem} ne prendono una in più); cambia solo \emph{quali} righe un
+rank possiede. Il block raccoglie direttamente nella matrice finale, essendo i
+suoi dati già contigui; il cyclic raccoglie in un buffer compattato che il rank
+$0$ poi de-interlaccia, un riordino locale in memoria che non aggiunge alcun
+messaggio. La simmetria fra i due schemi è però meno perfetta di quanto la
+singola espressione suggerisca: quel riordino è una copia seriale dell'intera
+matrice, eseguita da un solo rank e di costo indipendente da $p$. Non entra in
+\texttt{comm\_fraction} --- non è comunicazione --- ma entra in $T_\parallel(p)$,
+ed è l'unico costo del cyclic assente negli altri due schemi; se ne discute
+il peso nell'analisi dei risultati. Sarebbe eliminabile ricevendo direttamente
+in posizione con un tipo derivato \texttt{MPI\_Type\_vector} di passo
+\texttt{size}, al prezzo di una gather su tipo non contiguo.
+
+La gather è cronometrata dopo una barriera, per la ragione discussa sopra:
+
+\begin{verbatim}
+MPI_Barrier(MPI_COMM_WORLD);      // park the straggler wait outside the timing
+const double t0 = MPI_Wtime();    // of the gather (but inside T(p))
+MPI_Gatherv(local.data(), my_rows * width, MPI_INT, recvbuf,
+            px_counts.data(), px_displs.data(), MPI_INT, 0, MPI_COMM_WORLD);
+g_last_comm_seconds = MPI_Wtime() - t0;
+\end{verbatim}
+
+Lo schema dinamico è invece l'unico che richiede un'architettura dedicata. Il
+protocollo è minimale: il comando è un intero (l'indice di riga), il risultato è
+\texttt{width+1} interi --- l'indice di riga seguito dagli escape time di quella
+riga --- cosicché il master archivi il risultato all'arrivo senza tenere traccia
+di chi detenga cosa. Il cuore è il ciclo di eventi del master:
+
+\begin{verbatim}
+while (active > 0) {
+    MPI_Recv(result.data(), width + 1, MPI_INT, MPI_ANY_SOURCE, TAG_RESULT,
+             MPI_COMM_WORLD, &status);        // whoever finishes first
+    // file the row into the matrix, then feed that same worker
+    if (next_row < height) {
+        MPI_Send(&next_row, 1, MPI_INT, status.MPI_SOURCE, TAG_WORK, ...);
+        ++next_row;
+    } else {
+        MPI_Send(&none, 1, MPI_INT, status.MPI_SOURCE, TAG_STOP, ...);
+        --active;
+    }
+}
+\end{verbatim}
+
+\texttt{MPI\_ANY\_SOURCE} è ciò che realizza il self-scheduling: non è il master
+a decidere chi lavora, ma il primo worker che si libera a farsi avanti. La
+terminazione è implicita: ogni worker attivo detiene esattamente una riga in
+sospeso, quindi \texttt{active} si annulla quando tutte le righe
+sono state ricevute. Non serve alcuna gather finale, perché la matrice si compone
+incrementalmente sul master. Vale la pena notare il contrasto con OpenMP: lì la
+coda era un dettaglio interno al runtime, invisibile nel codice utente; qui la
+stessa politica richiede un protocollo di messaggi esplicito, un master dedicato
+e una condizione di terminazione da dimostrare. È il costo di complessità, prima
+ancora che di tempo.
+
+\paragraph{Strato driver.}
+MPI richiede un sottile adattamento del driver condiviso, isolato dietro
+\texttt{\#ifdef USE\_MPI} così da lasciare invariate le build seriale e OpenMP:
+inizializzazione e chiusura di MPI, una barriera che allinea l'inizio della
+regione cronometrata su tutti i rank, e l'I/O confinato al rank $0$, l'unico a
+detenere la matrice assemblata. Il tempo di comunicazione raggiunge il CSV
+attraverso l'accessore \texttt{kernel\_comm\_seconds()}, nullo per seriale e
+OpenMP, senza che il kernel calcoli metriche.
+
+\paragraph{Configurazione della misura: un solo nodo, per vincolo.}
+Il job gira su un \textbf{unico nodo}, per un vincolo dell'ambiente e non per
+scelta metodologica (sezione~\ref{sec:ambiente}): una richiesta con
+\texttt{-{}-nodes=2} viene rifiutata da SLURM al momento della sottomissione. Il
+paradigma nato per la memoria distribuita viene
+dunque misurato, per forza di cose, su memoria condivisa.
+
+L'allocazione è di $33$ task su un nodo, con i rank ancorati ai core e assegnati
+in ordine, riempiendo un socket prima di passare all'altro
+(\texttt{-{}-map-by core -{}-bind-to core}). È l'analogo MPI del
+\texttt{OMP\_PROC\_BIND=close} usato per OpenMP: senza, il runtime potrebbe
+distribuire i due soli rank di $p=2$ su socket diversi, caricando i punti a
+basso $p$ di una penalità inter-socket estranea alla decomposizione. Soltanto a
+$np=33$ un rank risiede necessariamente sul secondo socket. Si noti che questo posizionamento \emph{rank\,$\to$\,core}
+è cosa distinta dalla decomposizione \emph{riga\,$\to$\,rank} che porta lo stesso
+nome ``a blocchi''.
+
+La conseguenza va dichiarata apertamente. Tutti i messaggi transitano per la
+memoria condivisa del nodo e non per la rete, dunque la
+\texttt{comm\_fraction} misurata è un \emph{limite inferiore ottimistico}
+rispetto a quanto pagherebbe un'esecuzione realmente distribuita: quantifica
+correttamente \emph{quanta} comunicazione ciascuno schema richiede, ma ne
+sottostima il prezzo unitario. Il divario fra master--worker e schemi statici va
+perciò letto come ottimistico verso il primo. In cambio si ottiene che $T_1$ e
+$T_\parallel(p)$ sono garantiti sullo stesso hardware per costruzione, e che le
+curve MPI e OpenMP diventano direttamente confrontabili nei valori assoluti, non
+solo nelle tendenze: la loro differenza riflette in larga misura il solo
+modello di programmazione.
+
+\paragraph{Il lanciatore: \texttt{mpirun} e non \texttt{srun}.}
+La versione di OpenMPI disponibile sul cluster non può essere lanciata
+direttamente da \texttt{srun}: con il modulo \texttt{amd/gcc-8.5.0/openmpi-4.1.6}
+ogni rank termina dentro \texttt{MPI\_Init} con l'errore
+\begin{verbatim}
+OPAL ERROR: Unreachable in file ext3x_client.c at line 111
+\end{verbatim}
+La causa è un disallineamento di versione nello strato di avvio: il client PMIx
+di OpenMPI~$4.1.6$ è costruito per PMIx~$3.x$ e non dialoga con il server PMIx
+v5 esposto da SLURM. I rank sono quindi lanciati con \texttt{mpirun}, che legge
+l'allocazione dalle variabili d'ambiente di SLURM e avvia i processi con il PMIx
+interno a OpenMPI. Il posizionamento dei rank resta invariato
+(\texttt{-{}-map-by core -{}-bind-to core}), mentre la variabile
+\texttt{MPI\_DECOMP} va inoltrata esplicitamente con \texttt{-x}, perché
+\texttt{mpirun} propaga di default le sole variabili \texttt{OMPI\_*}. La
+baseline seriale, che non usa MPI, continua a essere lanciata con \texttt{srun}.
+
+Restano valide le scelte già motivate per OpenMP e per l'ambiente di misura
+(sezione~\ref{sec:ambiente}): $T_1$ misurato con il binario seriale vero sullo
+stesso nodo, compilazione dentro il job, kernel \emph{bare} come riferimento di
+scaling.
+
+% ============================================================
+\subsubsection{Analisi dei risultati}
+\label{sec:mpi-risultati}
+% ============================================================
+
+% Dati: job 34137 su gnode01, partizione ulow, 53 s di elapsed, COMPLETED 0:0.
+% run_34137.csv (15 punti MPI + la propria baseline seriale) e merged.csv.
+% T(1) = 0,720205 s, misurato nello stesso job.
+
+Il confronto mette a sistema i tre schemi sullo stesso intervallo di unità di
+calcolo, a griglia e $N_{\max}$ fissati. La tabella~\ref{tab:mpi-schemi}
+raccoglie i $15$ punti misurati.\footnote{Job $34137$ su \texttt{gnode01},
+    partizione \texttt{ulow}. Gli speedup sono riferiti alla baseline seriale
+    misurata \emph{dentro lo stesso job}, $T_1 = 0{,}72021$~s; lo sweep OpenMP usa
+    analogamente la propria, $0{,}72563$~s. Le due differiscono dello $0{,}75\%$, che
+    è il fondo di risoluzione di qualunque confronto \emph{fra} paradigmi condotto
+    sugli speedup: per questo il raffronto diretto con OpenMP, più avanti, è fatto
+    sui tempi.}
+\vspace{2,5mm}
+\begin{table}[htbp]
+    \centering
+    \begin{tabular}{llrrrrrr}
+        \hline
+        Schema & $p$ & $S \le p/\lambda_p$ & $T_\parallel(p)$ [s] & $S(p)$ & $E(p)$ & $e(p)$ & comm.\ [\%] \\
+        \hline
+        seriale  & 1  & ---     & $0{,}72021$ & --- & --- & --- & --- \\
+        \hline
+        block    & 2  & $2{,}00$  & $0{,}36113$ & $1{,}994$  & $0{,}997$ & $0{,}0029$ & $0{,}13$ \\
+        block    & 4  & $2{,}13$  & $0{,}33965$ & $2{,}120$  & $0{,}530$ & $0{,}2955$ & $0{,}08$ \\
+        block    & 8  & $3{,}41$  & $0{,}21255$ & $3{,}388$  & $0{,}424$ & $0{,}1944$ & $0{,}14$ \\
+        block    & 16 & $6{,}17$  & $0{,}11759$ & $6{,}125$  & $0{,}383$ & $0{,}1075$ & $0{,}31$ \\
+        block    & 32 & $12{,}02$ & $0{,}06157$ & $11{,}697$ & $0{,}366$ & $0{,}0560$ & $1{,}20$ \\
+        \hline
+        cyclic   & 2  & $2{,}00$  & $0{,}36252$ & $1{,}987$  & $0{,}993$ & $0{,}0067$ & $0{,}18$ \\
+        cyclic   & 4  & $4{,}00$  & $0{,}18126$ & $3{,}973$  & $0{,}993$ & $0{,}0022$ & $0{,}25$ \\
+        cyclic   & 8  & $7{,}99$  & $0{,}09096$ & $7{,}918$  & $0{,}990$ & $0{,}0015$ & $0{,}24$ \\
+        cyclic   & 16 & $15{,}97$ & $0{,}04930$ & $14{,}608$ & $0{,}913$ & $0{,}0064$ & $3{,}37$ \\
+        cyclic   & 32 & $31{,}70$ & $0{,}02411$ & $29{,}871$ & $0{,}933$ & $0{,}0023$ & $3{,}02$ \\
+        \hline
+        dynamic  & 2  & $2{,}00$  & $0{,}36199$ & $1{,}990$  & $0{,}995$ & $0{,}0053$ & $0{,}43$ \\
+        dynamic  & 4  & $4{,}00$  & $0{,}18154$ & $3{,}967$  & $0{,}992$ & $0{,}0028$ & $0{,}68$ \\
+        dynamic  & 8  & $8{,}00$  & $0{,}09092$ & $7{,}921$  & $0{,}990$ & $0{,}0014$ & $0{,}86$ \\
+        dynamic  & 16 & $16{,}00$ & $0{,}04622$ & $15{,}583$ & $0{,}974$ & $0{,}0018$ & $2{,}21$ \\
+        dynamic  & 32 & $32{,}00$ & $0{,}02316$ & $\mathbf{31{,}102}$ & $0{,}972$ & $0{,}0009$ & $2{,}54$ \\
+        \hline
+    \end{tabular}
+    \caption{MPI: metriche per schema di decomposizione e numero di unità di
+    calcolo. Griglia $1024^2$, $N_{\max}=1000$, $33$ rank su un unico nodo. Per lo
+    schema dinamico $p$ indica i worker; i processi allocati sono $p+1$. La colonna
+        $S \le p/\lambda_p$ riporta il limite predetto a priori dal profilo di carico
+        seriale (tabella~\ref{tab:serial_pred_lambdaP}) e non è una misura: è il termine
+        di confronto contro cui va letto lo speedup osservato.}
+    \label{tab:mpi-schemi}
+\end{table}
+\vspace{2,5mm}
+\begin{table}[htbp]
+    \centering
+    \begin{tabular}{lrrrr}
+        \hline
+        $p$ & $T$ OpenMP \texttt{dynamic,1} [s] & $T$ MPI \texttt{dynamic} [s] &
+        divario & comm.\ MPI [\%] \\
+        \hline
+        2  & $0{,}36079$ & $0{,}36199$ & $+0{,}33\%$ & $0{,}43$ \\
+        4  & $0{,}18043$ & $0{,}18154$ & $+0{,}62\%$ & $0{,}68$ \\
+        8  & $0{,}09028$ & $0{,}09092$ & $+0{,}71\%$ & $0{,}86$ \\
+        16 & $0{,}04542$ & $0{,}04622$ & $+1{,}76\%$ & $2{,}21$ \\
+        32 & $0{,}02342$ & $0{,}02316$ & $-1{,}11\%$ & $2{,}54$ \\
+        \hline
+    \end{tabular}
+    \caption{Confronto dei due scheduler dinamici a parità di politica (concessione
+    di una riga): stessa strategia su modelli di memoria diversi. Il confronto è sui
+    \emph{tempi} e non sugli speedup, così da essere indipendente dalla baseline
+    seriale usata dai due sweep. Divario positivo significa MPI più lento. Si ricordi
+    che a $p$ unità di calcolo MPI occupa $p+1$ core, OpenMP $p$.}
+    \label{tab:dynamic-confronto}
+\end{table}
+
+\paragraph{Il quadro d'insieme.}
+A $32$ unità di calcolo, sullo stesso hardware e sullo stesso carico, lo speedup
+va da $11{,}70$ (block) a $31{,}10$ (master--worker): un fattore $2{,}66$ fra la
+regola peggiore e la migliore, che coincide entro lo $0{,}1\%$ con lo
+sbilanciamento $\lambda_{32}$ previsto per i blocchi dal solo profilo seriale.
+Il rapporto fra speedup misurato e limite previsto è compreso fra $0{,}972$ e
+$0{,}997$ in tredici punti su quindici; le due eccezioni sono il cyclic a $p=16$
+e $p=32$ ($0{,}915$ e $0{,}942$), discusse più avanti. Il confronto punto per
+punto, esteso a OpenMP, è nella sezione~\ref{sec:validazione-previsioni}.
+
+\paragraph{Il block è limitato dal proprio $\lambda_p$.}
+Il dato più vistoso della tabella è il passaggio da $p=2$ a $p=4$: raddoppiando
+i processi il tempo scende da $0{,}36113$~s a $0{,}33965$~s, cioè del $6\%$.
+Non è un'anomalia di misura: è $\lambda_p$ che passa da $1{,}0000$ a $1{,}8798$
+e si mangia per intero il raddoppio. Il punto $p=2$ merita una nota, perché è
+ingannevole: la sua efficienza quasi perfetta ($0{,}997$) non dice che il block
+scali bene a $p$ piccolo, ma che la viewport è simmetrica rispetto all'asse
+reale, sicché le due metà dell'immagine contengono esattamente lo stesso numero
+di iterazioni ($129\,827\,745$ ciascuna) e $\lambda_2 = 1$ per una proprietà
+geometrica dell'insieme, non della decomposizione.
+
+Al crescere di $p$ il $\lambda_p$ dei blocchi continua a crescere, fino al valore
+intrinseco $\lambda = 2{,}76$ del caso limite $p = H$. L'efficienza tende perciò
+a stabilizzarsi attorno a $1/\lambda_p$, pari a $0{,}376$ a $p=32$ contro lo
+$0{,}366$ misurato, mentre lo speedup continua a crescere: già a $p=32$, però,
+circa il $63\%$ del tempo di calcolo aggregato va perso in attesa.
+
+\paragraph{Lettura di Karp--Flatt.}
+Il block è il caso di scuola in cui la metrica segnala correttamente un problema
+attribuendolo però alla causa sbagliata. Se il deficit fosse una frazione
+seriale alla Amdahl, $e(p)$ sarebbe costante; qui invece decresce di un fattore
+cinque, da $0{,}2955$ a $0{,}0560$, e segue la forma
+$e(p) \approx (\lambda_p - 1)/(p - 1)$ già ricavata per lo \texttt{static} di
+OpenMP (sezione~\ref{sec:openmp-risultati}), che realizza la stessa regola: i
+valori predetti, $0{,}2933$, $0{,}1927$, $0{,}1062$ e $0{,}0536$ per
+$p = 4, 8, 16, 32$, riproducono i misurati entro l'$1\%$ fino a $p=16$; a
+$p=32$ lo scarto sale al $4{,}5\%$, nello stesso punto in cui lo speedup si
+allontana dal limite. La ``frazione seriale
+sperimentale'' non misura codice seriale, ma sbilanciamento.
+
+\paragraph{Block e cyclic: bilanciamento a costo zero.}
+Il primo confronto isola il puro effetto del bilanciamento: la comunicazione è
+la stessa unica gather, dunque ogni differenza di tempo è attribuibile alla sola
+distribuzione delle righe. Fino a $p=8$ il cyclic è indistinguibile dall'ideale
+--- $E = 0{,}993$, $0{,}993$, $0{,}990$ a $2$, $4$ e $8$ processi --- mentre il
+block, sulla stessa gather e sullo stesso carico, si ferma a $0{,}997$, $0{,}530$
+e $0{,}424$. A $p=8$ il rapporto fra i due tempi è $2{,}34$, contro il $2{,}35$
+predetto dal rapporto dei rispettivi $\lambda_p$: l'intero divario è
+distribuzione delle righe. La \texttt{comm\_fraction} chiude l'argomento: $0{,}18\%$,
+$0{,}25\%$, $0{,}24\%$ per il cyclic contro $0{,}13\%$, $0{,}08\%$, $0{,}14\%$
+per il block --- la stessa cosa entro il rumore di misura. Non c'è stato alcun
+dialogo aggiuntivo: solo la medesima gather finale.
+
+\paragraph{Il master--worker e l'effetto coda.}
+Il master--worker firma il miglior punto assoluto dell'intera campagna CPU:
+$S = 31{,}10$ su $32$ unità di calcolo, $E = 0{,}972$, $89{,}7$~GFLOP/s contro i
+$2{,}88$ della baseline seriale. Il residuo del $2{,}8\%$ ha una spiegazione
+strutturale: è l'\emph{effetto coda}. L'ultima riga consegnata a un worker può
+essere la più pesante della griglia, e con $\lambda_{\text{riga}} = 2{,}76$ la
+perdita di coda vale al più $(\lambda_{\text{riga}} - 1)\,p/H$, cioè il $5{,}5\%$
+a $p=32$:
+il $2{,}8\%$ misurato sta dentro quel margine. Sul fronte del coordinamento, il
+master resta lontano dalla saturazione: a $p=32$ un worker spende circa $18~\mu$s
+di round-trip per riga, contro $0{,}70$~ms di calcolo medio: circa quaranta volte
+meno.
+
+Va ribadita la contabilità: a $32$ worker lo schema alloca $33$ core, uno dei
+quali non calcola. L'efficienza per unità di calcolo è $0{,}972$, quella per core
+allocato $31{,}10/33 = 0{,}942$. Entrambi i numeri sono legittimi, ma vanno
+dichiarati insieme: a parità di core \emph{allocati}, e non di unità di calcolo,
+il vantaggio del master--worker sul cyclic si assottiglia sensibilmente.
+
+\paragraph{Cyclic e master--worker: quando il coordinamento adattivo comincia a valere.}
+Fino a $p=8$ i due schemi sono indistinguibili: $0{,}09096$~s contro
+$0{,}09092$~s, uno scarto dello $0{,}04\%$, un ordine di grandezza sotto la
+dispersione delle ripetizioni; a $p=4$ il cyclic è addirittura più veloce dello
+$0{,}15\%$. Su questo intervallo la conclusione forte regge per intero: il
+self-scheduling non ripaga la propria complessità, perché una decomposizione
+statica accorta bilancia già quanto basta. A $p=16$ e $p=32$, però, il
+master--worker impiega il $6{,}3\%$ e il $4{,}0\%$ di tempo in meno del cyclic.
+
+Il deficit del cyclic ad alto $p$ non è imputabile né a $\lambda_p$, che è quasi
+$1$, né alla gather, che è la stessa del block. Il candidato è il riordino di
+de-interlacciamento discusso sopra: una copia seriale su rank $0$ dell'intera
+matrice, $4$~MiB letti e $4$~MiB scritti, di costo indipendente da $p$ e
+stimabile attorno al millisecondo. A $p=32$ il divario dal master--worker è di
+$0{,}95$~ms, coerente con la stima; a $p=16$ è invece di $3{,}1$~ms, tre volte
+tanto, e un costo fisso non basta a spiegarlo. Poiché $p=16$ è anche il punto con
+la dispersione più alta, l'attribuzione resta un'ipotesi: la verifica diretta,
+cronometrando il riordino o eliminandolo con il tipo derivato
+\texttt{MPI\_Type\_vector}, rientra fra gli sviluppi del lavoro.
+
+\paragraph{La comunicazione non è il collo di bottiglia.}
+In termini assoluti la comunicazione è irrilevante in tutta la campagna: fra
+$0{,}22$ e $1{,}66$~ms su tempi che vanno da $23$~ms a $361$~ms, mai oltre il
+$3{,}4\%$ di $T_\parallel(p)$. Il master--worker scambia $2H = 2\,048$ messaggi
+per ripetizione contro l'unica gather collettiva degli schemi statici, e
+nonostante ciò resta sotto il $2{,}6\%$: alla grana di una riga ($0{,}70$~ms di
+calcolo contro $18~\mu$s di protocollo) il messaggio non è il fattore limitante.
+
+Tre cautele accompagnano però questi numeri. Primo, \texttt{comm\_fraction} non è
+la stessa grandezza nei tre schemi: negli statici misura la sola
+\texttt{MPI\_Gatherv}, nel dinamico include anche l'attesa del comando successivo; confrontare il
+$2{,}54\%$ del dinamico con l'$1{,}20\%$ del block come se fossero omogenei è
+scorretto. Secondo, per il block quasi tutto il tempo perso non è in
+\texttt{comm}: a $p=32$ lo schema ha $1{,}20\%$ di comunicazione e $63\%$ di
+inattività parcheggiata nella barriera, conteggiata in $T_\parallel(p)$ ma non
+in \texttt{comm\_fraction}; letta da sola, la colonna suggerirebbe che il block
+è efficiente. Terzo, questi valori sono su memoria condivisa: con la rete di
+mezzo il master--worker, \emph{latency-bound} su $2\,048$ messaggi piccoli,
+degraderebbe assai più del cyclic, \emph{bandwidth-bound} su una singola
+collettiva --- al punto che la classifica potrebbe invertirsi. È la conclusione
+più esposta al limite del nodo singolo.
+
+\paragraph{Scheduler dinamici a confronto: il costo del modello di memoria.}
+Il terzo confronto, in tabella~\ref{tab:dynamic-confronto}, mette a fronte i due
+scheduler dinamici sulla stessa politica: a concessione unitaria da entrambi i
+lati, il loro divario quantifica il costo del solo cambio di modello di memoria.
+Fino a $p=16$ MPI paga, e paga poco: dallo $0{,}33\%$ all'$1{,}76\%$. È il
+prezzo del protocollo rispetto a un prelievo da contatore condiviso, e la sua
+crescita con $p$ è quella attesa da un coordinatore centralizzato.
+
+A $p=32$ il segno si inverte: MPI è più veloce dell'$1{,}11\%$ ($0{,}02316$~s
+contro $0{,}02342$~s). Da un lato, \texttt{dynamic,1} di OpenMP mostra proprio a
+$32$ thread il suo unico scostamento apprezzabile dall'ideale ($E$ da $0{,}999$
+a $0{,}968$): $1\,024$ prelievi da un unico contatore condiviso fra $32$ thread
+cominciano a costare contesa. Dall'altro, una possibile spiegazione è che il master
+MPI serializzi le richieste su un core proprio, senza contendere cache line ai
+worker. Alla scala
+massima misurata, il costo della coda in memoria condivisa supera quello del
+passaggio di messaggi. Resta la contabilità: quel vantaggio si ottiene occupando
+un $33^{\circ}$ core, e a parità di core allocati l'ordine si ristabilisce a
+favore di OpenMP di circa il $2\%$.
+
+\paragraph{Correttezza e qualità della misura.}
+Tutte e sedici le righe del file di run condividono il medesimo checksum
+($9203734293765563287$), uguale a quello della baseline seriale: le tre
+decomposizioni riproducono la matrice degli escape time bit per bit, su conteggi
+di rank che dividono e non dividono l'altezza, e nessuno schema ha alterato il
+risultato. Le sei baseline seriali a $1024^2$ e $N_{\max}=1000$ registrate nel
+dataset, una per ciascun job, valgono fra $0{,}71990$ e $0{,}72563$~s e
+concordano entro lo $0{,}8\%$: è una verifica indipendente della riproducibilità
+del nodo. La dispersione fra ripetizioni, misurata come scarto della mediana dal
+minimo, resta sotto il $2\%$ nella maggior parte dei punti, ma sale al $4{,}4\%$
+per il master--worker a $p=32$ e al $5{,}1\%$ e $6{,}6\%$ per il cyclic a $p=16$
+e $p=32$, fra i punti più brevi e quindi più esposti alla contesa su
+\texttt{gnode01}. L'efficienza non monotona del cyclic ($0{,}913$ a $p=16$
+contro $0{,}933$ a $p=32$) non ha spiegazione strutturale ed è il punto da
+rimisurare prima di costruirvi sopra un'affermazione.
