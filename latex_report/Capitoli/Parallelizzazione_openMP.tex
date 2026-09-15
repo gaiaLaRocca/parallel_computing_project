@@ -2,7 +2,7 @@
 \label{sec:openmp}
 
 Nel modello a memoria condivisa i thread non si scambiano dati in modo
-esplicito: leggono e scrivono la stessa matrice degli escape time $n(r,c)$,
+esplicito: leggono e scrivono la stessa matrice degli escape time,
 residente in un unico spazio di indirizzamento. Il grado di parallelismo non è
 quindi fissato dal numero di pixel --- che sono milioni --- ma dal numero di
 core del nodo: OpenMP istanzia un pool fisso di thread, e le clausole di
@@ -332,7 +332,7 @@ forma del tetto e non da sola.
         \texttt{static}     & $0{,}533 \to 0{,}375$      & decresce, $0{,}2921 \to 0{,}0538$  & sbilanciamento strutturale \\
         \texttt{guided}     & $\approx 0{,}690$ costante & decresce, $0{,}1475 \to 0{,}0149$  & sbilanciamento strutturale \\
         \texttt{dynamic,1}  & $1{,}005 \to 0{,}968$      & cresce, $-0{,}0018 \to 0{,}0011$   & contesa sulla coda \\
-        \texttt{dynamic,16} & $1{,}006 \to 0{,}725$      & cresce, $-0{,}0018 \to 0{,}0122$   & contesa sulla coda \\
+        \texttt{dynamic,16} & $1{,}006 \to 0{,}725$      & cresce, $-0{,}0018 \to 0{,}0122$   & tetto di granularità \\
         \texttt{dynamic,64} & $0{,}971 \to 0{,}193$      & cresce, $0{,}0099 \to 0{,}1351$    & tetto di granularità \\
         \hline
     \end{tabular}
@@ -374,20 +374,44 @@ tende a \emph{zero}. Non c'è dunque alcun tetto fisso che lo statico stia
 saturando: il valore $12{,}02$ è il limite \emph{alla singola taglia} $p = 32$,
 non un asintoto, perché il tetto della decomposizione a blocchi vale
 $p/\lambda_p$ e cresce con $p$, fino a $H/\lambda \approx 370$ nel caso limite
-$p = H$. Che $e(32) = 0{,}0538$ sia già sceso \emph{sotto}
-$1/12{,}02 \approx 0{,}083$ è la verifica diretta di questo punto, e sarebbe
-impossibile per una metrica che vi convergesse dall'alto.
+$p = H$. A distinguere i due casi è la \emph{direzione} della metrica, non il suo
+valore: un tetto fisso $S_{\max}$ dà una $e(p)$ \emph{crescente}, che converge a
+$1/S_{\max}$ dal basso --- è quanto si osserva più avanti per \texttt{dynamic,64}
+--- mentre qui $e(p)$ decresce di un fattore cinque. Il confronto fra
+$e(32) = 0{,}0538$ e $1/12{,}02 \approx 0{,}083$ non è di per sé dirimente,
+perché anche un tetto fisso a $12{,}02$ lascerebbe $e(32)$ al di sotto di
+$0{,}083$: è l'andamento, e solo l'andamento, a escludere il tetto.
 
 \medskip
 \noindent\emph{Le politiche a $e(p)$ crescente.}
-Per \texttt{dynamic,1} e \texttt{dynamic,16} la metrica parte da zero e cresce
-di poco ($0{,}0011$ e $0{,}0122$ a $p = 32$): è il costo di coordinamento della
-coda condivisa, che aumenta con il numero di thread che vi accedono. Non c'è
-qui alcun tetto --- l'efficienza resta alta --- e infatti i valori restano di
-uno o due ordini di grandezza sotto quelli delle politiche sbilanciate.
+Per \texttt{dynamic,1} la metrica parte da zero e cresce di pochissimo
+($0{,}0011$ a $p = 32$): è il costo di coordinamento della coda condivisa, che
+aumenta con il numero di thread che vi accedono. Non c'è qui alcun tetto ---
+l'efficienza resta a $0{,}968$ --- e infatti i valori restano di due ordini di
+grandezza sotto quelli delle politiche sbilanciate.
 
-\texttt{dynamic,64} appartiene alla stessa direzione ma per una ragione diversa,
-ed è il solo caso dello sweep in cui il tetto è genuinamente fisso. I $16$ chunk
+Le altre due politiche crescenti hanno invece un tetto, ed è lo stesso
+meccanismo a due granularità diverse. La regola ricavata sopra --- chunk fissi
+di $c$ righe ereditano il limite della decomposizione a blocchi con $H/c$
+blocchi --- si applica anche a \texttt{dynamic,16}, che con $c = 16$ su $1024$
+righe forma $64$ chunk. Interrogando a $P = 64$ lo stesso script di previsione
+usato per la tabella~\ref{tab:serial_pred_lambdaP}
+(\repofile{mandelbrot/analysis/block_imbalance.py}, opzione \texttt{-{}-p 64})
+si ottiene $\lambda_{64} = 2{,}7076$, e quindi un tetto
+$S_{\max} = 64/\lambda_{64} = 23{,}64$ contro i $23{,}21$ misurati a $32$
+thread: uno scarto dell'$1{,}8\%$. Con quel tetto la forma chiusa dà
+$e(32) = 0{,}0114$, contro lo $0{,}0122$ misurato. È la seconda verifica
+indipendente della regola --- la prima essendo \texttt{dynamic,64} --- ed è
+anche ciò che riclassifica la politica: il deficit di \texttt{dynamic,16} non è
+contesa sulla coda, che con sedici volte più prelievi vale per
+\texttt{dynamic,1} appena $0{,}0011$, ma granularità. Il tetto diventa vincolante
+progressivamente, via via che la quota equa $\mathcal{W}/p$ scende sotto il peso
+dei chunk più pesanti, ed è di fatto raggiunto a $p=32$: è per questo che
+l'efficienza passa da $0{,}993$ a $8$ thread a $0{,}941$ a $16$ e a $0{,}725$ a
+$32$.
+
+\texttt{dynamic,64} è lo stesso meccanismo portato all'estremo, e vi si legge in
+forma pura perché il tetto è già saturo dal primo punto misurato. I $16$ chunk
 da $64$ righe non hanno un massimo ma \emph{due}, di peso identico ($2{,}59$
 volte la media): il profilo di carico è simmetrico rispetto all'asse reale, e i
 chunk delle righe $448$--$511$ e $512$--$575$ lo attraversano specularmente.

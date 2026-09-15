@@ -25,9 +25,14 @@ scrittura su disco e il calcolo delle metriche. L'allocazione è inclusa
 deliberatamente e non per semplicità: la definizione di speedup richiede che
 $T_1$ e $T_\parallel(p)$ cronometrino la \emph{stessa} regione di codice, e
 nelle versioni parallele l'allocazione della matrice condivisa è parte del
-costo. Il suo peso è comunque marginale: la matrice di riferimento occupa
-$1024^2$ interi a 32~bit, cioè 4~MiB, il cui azzeramento si stima dell'ordine
-del decimo di millisecondo, contro i $722$~ms del calcolo.
+costo. Il suo peso non è stato cronometrato separatamente, ed è l'unica
+grandezza del modello a restare stimata: la matrice di riferimento occupa
+$1024^2$ interi a 32~bit, cioè 4~MiB, il cui azzeramento costa fra il decimo di
+millisecondo e il millisecondo --- a seconda che l'allocatore riusi pagine già
+mappate o ne chieda di nuove al kernel --- contro i $722$~ms del calcolo. Il
+confronto con i tempi paralleli misurati restringe l'intervallo verso il basso
+(sezione~\ref{sec:parallelizzazione}), ma la misura diretta resta fra gli
+sviluppi del lavoro.
 
 Ogni configurazione è eseguita $R$ volte consecutive; si adotta il
 \emph{minimo} sulle ripetizioni
@@ -253,9 +258,12 @@ parallelizzabile e $1-P$ quella seriale, lo speedup è limitato superiormente da
     S(p) \le \frac{1}{(1-P) + \dfrac{P}{p}}
     \;\xrightarrow[p\to\infty]{}\; \frac{1}{1-P}.
 \]
-Come mostrato nella sezione~\ref{sec:parallelizzazione}, nel codice in esame
-$1-P \approx 10^{-4}$: Amdahl prevede uno speedup quasi ideale e fornisce il
-\emph{limite di riferimento}, ma non spiega gli scostamenti osservati.
+Come discusso nella sezione~\ref{sec:parallelizzazione}, nel codice in esame
+$1-P$ è dell'ordine di $10^{-4}$: Amdahl prevede uno speedup quasi ideale e
+fornisce il \emph{limite di riferimento}, ma non spiega gli scostamenti
+osservati. Il valore non è misurato direttamente, e la
+sezione~\ref{sec:parallelizzazione} mostra entro quali margini i dati paralleli
+lo vincolino.
 
 \subsubsection{Metrica di Karp--Flatt}
 Per rendere conto di tali scostamenti si ricorre alla frazione seriale

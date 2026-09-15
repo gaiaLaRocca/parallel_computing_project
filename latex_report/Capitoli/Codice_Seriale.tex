@@ -44,8 +44,9 @@ numero medio di iterazioni per pixel.
 \end{itemize}
 
 I dati della sezione~\ref{serial_results} mostrano che la correzione riguarda
-una frangia larga circa un pixel lungo il contorno, e che lo sbilanciamento del
-carico dipende dalla geometria dell'insieme molto più che dalla soglia.
+una frangia sottile lungo il contorno, di area fissa e pari a circa lo
+$0{,}114\%$ della finestra, e che lo sbilanciamento del carico dipende dalla
+geometria dell'insieme molto più che dalla soglia.
 
 \subsection{Frammenti di codice rilevanti}
 \label{sec:seriale-codice}
@@ -230,7 +231,10 @@ fattore $9{,}57$ e il tempo passa da $0{,}37$ a $3{,}56$~s. Fra $500$ e $1000$ i
 pixel corretti sono $702$, fra $1000$ e $5000$ altri $514$: il conteggio
 diminuisce in modo monotono, come previsto, ma con incrementi via via minori.
 Nell'intervallo esplorato, dunque, alzare la soglia non fa emergere nuove
-strutture: corregge una frangia larga circa un pixel lungo il contorno.
+strutture: corregge una frangia sottile lungo il contorno. Si noti che
+``sottile'' va inteso in area e non in pixel: come mostra la tabella seguente,
+la frangia occupa una frazione costante della griglia, dunque il suo spessore
+\emph{in pixel} cresce con la risoluzione invece di restare unitario.
 
 La verifica visiva conferma il conteggio. Le tre immagini corrispondenti alle
 righe della tabella, generate con lo stesso codice seriale sulla finestra di
@@ -266,17 +270,37 @@ La tabella~\ref{tab:serial_frangia} conferma, sulla frangia, l'invarianza di
 scala osservata sopra. Al raddoppiare del lato della griglia i pixel di frangia
 quadruplicano come il totale (fattori $4{,}05$ e $3{,}86$), e la loro frazione
 resta attorno allo $0{,}114\%$, con oscillazioni entro il $2\%$ relativo e senza
-tendenza monotona. Il dato è coerente con un risultato teorico noto: il bordo
-dell'insieme di Mandelbrot ha dimensione di Hausdorff, e dunque di box, pari a
-$2$~\cite{shishikura1998}, la stessa dimensione del piano che lo contiene, per
-cui i pixel di bordo scalano come i pixel totali. Ne discendono due conseguenze.
-La prima è che raffinare la griglia non migliora la qualità \emph{relativa}
-della classificazione: aumenta nella stessa proporzione il numero di pixel
-risolti e quello dei pixel incerti. La seconda offre una lettura geometrica
-dell'invarianza di $\lambda$ e $\mathrm{CoV}$ osservata al variare della
-risoluzione: se ogni popolazione definita sul bordo mantiene frazione costante,
-anche il profilo di carico per riga, che dal bordo dipende, conserva la propria
-forma relativa.
+tendenza monotona.
+
+La spiegazione non richiede la geometria frattale, ed è anzi più elementare.
+L'insieme $\{c : 500 \le n(c) < 5000\}$ non è il bordo dell'insieme di
+Mandelbrot: è una regione fissa del piano, di area positiva, che non dipende
+dalla risoluzione. Contare i pixel che vi cadono equivale a valutare una somma
+di Riemann per la sua area, e raffinare la griglia la fa convergere: la frazione
+tende al rapporto fra l'area della frangia e quella della finestra, ed è perciò
+costante per costruzione. La dimensione del bordo entrerebbe in gioco soltanto
+nel limite $N_{\max} \to \infty$, in cui la frangia degenera sul bordo stesso;
+qui $N_{\max}$ resta fisso e la frangia è una corona di area finita.%
+\footnote{Il risultato di Shishikura --- il bordo dell'insieme ha dimensione di
+Hausdorff, e dunque di box, pari a $2$~\cite{shishikura1998}, la stessa
+dimensione del piano che lo contiene --- riguarda quel limite, e non è ciò che
+governa i dati della tabella~\ref{tab:serial_frangia}. Si osservi anche che la
+convergenza della somma di Riemann richiede la misurabilità secondo Jordan della
+frangia, cioè che il bordo dell'insieme abbia misura di Lebesgue nulla: è una
+congettura aperta, e la costanza della frazione resta qui un dato sperimentale,
+non un teorema.}
+
+Lo stesso argomento rende conto dell'invarianza di $\lambda$ e $\mathrm{CoV}$
+osservata al variare della risoluzione, senza bisogno di invocare il bordo. Il
+carico di riga normalizzato $w_r/\bar w$ è anch'esso una somma di Riemann:
+converge all'integrale del costo lungo la riga, e il profilo tende a una
+funzione limite della sola coordinata verticale. Ne discende che le sue
+statistiche adimensionali --- il massimo relativo $\lambda$, la dispersione
+relativa $\mathrm{CoV}$ --- convergono a costanti, come infatti si osserva entro
+lo $0{,}5\%$ su un intervallo di $64$ volte i pixel. Resta come conseguenza
+pratica che raffinare la griglia non migliora la qualità \emph{relativa} della
+classificazione: aumenta nella stessa proporzione il numero di pixel risolti e
+quello dei pixel incerti.
 
 \paragraph{L'entità dell'irregolarità.}
 La figura~\ref{fig:serial-row-profile} mostra il profilo di carico per riga

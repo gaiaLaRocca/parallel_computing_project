@@ -411,21 +411,42 @@ e $0{,}424$. A $p=8$ il rapporto fra i due tempi è $2{,}34$, contro il $2{,}35$
 predetto dal rapporto dei rispettivi $\lambda_p$: l'intero divario è
 distribuzione delle righe. La \texttt{comm\_fraction} chiude l'argomento: $0{,}18\%$,
 $0{,}25\%$, $0{,}24\%$ per il cyclic contro $0{,}13\%$, $0{,}08\%$, $0{,}14\%$
-per il block --- la stessa cosa entro il rumore di misura. Non c'è stato alcun
-dialogo aggiuntivo: solo la medesima gather finale.
+per il block, cioè fra $0{,}2$ e $0{,}7$~ms in entrambi i casi --- la stessa cosa
+entro il rumore di misura. Non c'è stato alcun dialogo aggiuntivo: solo la
+medesima gather finale. L'equivalenza vale però soltanto su questo intervallo di
+$p$, e si rompe a $p=16$: se ne discute subito sotto.
 
-\paragraph{Il master--worker e l'effetto coda.}
+\paragraph{Il master--worker e il costo del coordinamento.}
 Il master--worker firma il miglior punto assoluto dell'intera campagna CPU:
 $S = 31{,}10$ su $32$ unità di calcolo, $E = 0{,}972$, $89{,}7$~GFLOP/s contro i
-$2{,}88$ della baseline seriale. Il residuo del $2{,}8\%$ ha una spiegazione
-strutturale: è l'\emph{effetto coda}. L'ultima riga consegnata a un worker può
-essere la più pesante della griglia, e con $\lambda_{\text{riga}} = 2{,}76$ la
-perdita di coda vale al più $(\lambda_{\text{riga}} - 1)\,p/H$, cioè il $5{,}5\%$
-a $p=32$:
-il $2{,}8\%$ misurato sta dentro quel margine. Sul fronte del coordinamento, il
-master resta lontano dalla saturazione: a $p=32$ un worker spende circa $18~\mu$s
-di round-trip per riga, contro $0{,}70$~ms di calcolo medio: circa quaranta volte
-meno.
+$2{,}88$ della baseline seriale. Il residuo del $2{,}8\%$ è comunicazione, e la
+colonna che lo misura è già in tabella. Confrontando riga per riga il deficit
+dal limite $p/\lambda_p$ con la \texttt{comm\_fraction} si ottiene $0{,}5\%$
+contro $0{,}43\%$ a $p=2$, poi $0{,}8$ contro $0{,}68$, $1{,}0$ contro $0{,}86$,
+$2{,}6$ contro $2{,}21$ e $2{,}8\%$ contro $2{,}54\%$ a $p=32$: i due andamenti
+coincidono entro pochi decimi di punto su tutti e cinque i punti. Lo stesso
+numero si ricava per via indipendente dal protocollo: a $p=32$ un worker spende
+circa $18~\mu$s di round-trip per riga contro $0{,}70$~ms di calcolo medio, cioè
+il $2{,}6\%$ del proprio tempo. La coincidenza non è casuale ma strutturale:
+poiché il bilanciamento è perfetto ($\lambda_p = 1$) e il tempo di un worker è
+calcolo più attesa, il deficit dal limite \emph{è} la frazione di comunicazione,
+e non resta un residuo da attribuire ad altro.
+
+Vale la pena escludere esplicitamente la spiegazione alternativa, perché è quella
+che il modello del makespan suggerirebbe. Il lavoro non è frazionabile a piacere:
+l'unità indivisibile è la riga, e l'ultima riga consegnata a un worker potrebbe
+in linea di principio essere la più pesante, lasciando gli altri fermi ---
+l'\emph{effetto coda}. Su una consegna in ordine arbitrario il sovraccosto
+sarebbe di al più $\lambda_{\text{riga}}\,p/H$, cioè circa l'$8{,}6\%$ a $p=32$.
+Qui però le righe sono consegnate in ordine $0 \ldots H-1$, e la coda si svuota
+perciò sulle \emph{ultime} righe della griglia, che sono di bordo e fra le più
+leggere dell'immagine ($2\,281$ iterazioni contro una media di $253\,570$). Le
+righe pesanti vengono distribuite a metà esecuzione, quando ogni altro worker ha
+ancora lavoro da prelevare e nessuno resta inattivo. Simulando lo scheduling
+greedy sul profilo $\{w_r\}$ misurato, con la consegna nell'ordine che il codice
+usa davvero, il makespan supera la quota equa $\mathcal{W}/p$ dello $0{,}013\%$
+a $p=32$: in questo problema e con questo ordine l'effetto coda è oltre due
+ordini di grandezza più piccolo del deficit osservato, e non lo spiega.
 
 Va ribadita la contabilità: a $32$ worker lo schema alloca $33$ core, uno dei
 quali non calcola. L'efficienza per unità di calcolo è $0{,}972$, quella per core
@@ -442,24 +463,49 @@ self-scheduling non ripaga la propria complessità, perché una decomposizione
 statica accorta bilancia già quanto basta. A $p=16$ e $p=32$, però, il
 master--worker impiega il $6{,}3\%$ e il $4{,}0\%$ di tempo in meno del cyclic.
 
-Il deficit del cyclic ad alto $p$ non è imputabile né a $\lambda_p$, che è quasi
-$1$, né alla gather, che è la stessa del block. Il candidato è il riordino di
-de-interlacciamento discusso sopra: una copia seriale su rank $0$ dell'intera
-matrice, $4$~MiB letti e $4$~MiB scritti, di costo indipendente da $p$ e
-stimabile attorno al millisecondo. A $p=32$ il divario dal master--worker è di
-$0{,}95$~ms, coerente con la stima; a $p=16$ è invece di $3{,}1$~ms, tre volte
-tanto, e un costo fisso non basta a spiegarlo. Poiché $p=16$ è anche il punto con
-la dispersione più alta, l'attribuzione resta un'ipotesi: la verifica diretta,
-cronometrando il riordino o eliminandolo con il tipo derivato
-\texttt{MPI\_Type\_vector}, rientra fra gli sviluppi del lavoro.
+Il deficit del cyclic ad alto $p$ non è imputabile a $\lambda_p$, che è quasi
+$1$. Va invece imputato, in parti misurabili, a due costi che il cyclic paga e
+gli altri due schemi no.
 
-\paragraph{La comunicazione non è il collo di bottiglia.}
-In termini assoluti la comunicazione è irrilevante in tutta la campagna: fra
+Il primo è la gather, che ad alto $p$ non è più la stessa del block. In valore
+assoluto, a $p=16$ il cyclic vi spende $1{,}66$~ms contro i $0{,}36$~ms del
+block, un fattore $4{,}6$: quel divario di $1{,}3$~ms copre da solo circa il
+$40\%$ dei $3{,}1$~ms che separano il cyclic dal master--worker. A $p=32$,
+invece, le due gather tornano equivalenti ($0{,}73$ contro $0{,}74$~ms), il che
+isola ulteriormente $p=16$ come il punto anomalo della campagna.
+
+Il secondo è tutto ciò che il rank $0$ esegue serialmente attorno alla gather. Il
+cyclic, oltre alla matrice finale, alloca un secondo buffer da $4$~MiB in cui
+raccogliere le righe impacchettate, e alla fine ne copia $4$~MiB nella matrice
+riga per riga (\repofile{mandelbrot/src/mandelbrot_mpi.cpp}): due azzeramenti e
+una copia completa contro l'unico azzeramento del block, tutti di costo
+indipendente da $p$. È precisamente la firma che la metrica di Karp--Flatt sa
+riconoscere, e in questo schema la riconosce. La $e(p)$ del cyclic non decresce
+come quella del block né cresce come quella del dinamico: resta \emph{costante}
+attorno a $0{,}0015$--$0{,}0023$, esclusi i due punti rumorosi ($p=2$, dove pesa
+lo scarto fra baseline, e $p=16$). Una $e(p)$ costante è la firma di Amdahl, e
+$0{,}002$ su $T_1 = 720$~ms valgono circa $1{,}4$~ms di codice genuinamente
+seriale, coerente con la stima del riordino e delle allocazioni. È l'unico punto
+dell'intera campagna in cui la ``frazione seriale sperimentale'' misura davvero
+codice seriale, e non sbilanciamento o coordinamento travestiti.
+
+Resta che a $p=16$ i due termini bastano appena: $1{,}3$~ms di gather in eccesso
+più circa $1{,}4$~ms di costi seriali coprono $2{,}7$ dei $3{,}1$~ms di divario,
+e quel punto è anche quello con la dispersione più alta. La verifica diretta ---
+cronometrare il riordino, oppure eliminarlo ricevendo in posizione con un tipo
+derivato \texttt{MPI\_Type\_vector} --- rientra fra gli sviluppi del lavoro,
+insieme alla rimisura del punto.
+
+\paragraph{La comunicazione è piccola, ma è ciò che resta.}
+In termini assoluti la comunicazione è modesta in tutta la campagna: fra
 $0{,}22$ e $1{,}66$~ms su tempi che vanno da $23$~ms a $361$~ms, mai oltre il
 $3{,}4\%$ di $T_\parallel(p)$. Il master--worker scambia $2H = 2\,048$ messaggi
 per ripetizione contro l'unica gather collettiva degli schemi statici, e
 nonostante ciò resta sotto il $2{,}6\%$: alla grana di una riga ($0{,}70$~ms di
-calcolo contro $18~\mu$s di protocollo) il messaggio non è il fattore limitante.
+calcolo contro $18~\mu$s di protocollo) il messaggio non impedisce allo schema
+di avvicinarsi all'ideale. Sarebbe però sbagliato concluderne che sia
+trascurabile: una volta che il bilanciamento è perfetto non resta altro, ed è
+esattamente questa quota a separare il master--worker dallo speedup lineare.
 
 Tre cautele accompagnano però questi numeri. Primo, \texttt{comm\_fraction} non è
 la stessa grandezza nei tre schemi: negli statici misura la sola
@@ -498,9 +544,12 @@ favore di OpenMP di circa il $2\%$.
 \paragraph{Correttezza e qualità della misura.}
 Tutte e sedici le righe del file di run condividono il medesimo checksum
 ($9203734293765563287$), uguale a quello della baseline seriale: le tre
-decomposizioni riproducono la matrice degli escape time bit per bit, su conteggi
-di rank che dividono e non dividono l'altezza, e nessuno schema ha alterato il
-risultato. Le sei baseline seriali a $1024^2$ e $N_{\max}=1000$ registrate nel
+decomposizioni riproducono la matrice degli escape time bit per bit, e nessuno
+schema ha alterato il risultato. Un caso resta però scoperto, e va dichiarato:
+tutti i $p$ misurati ($2 \ldots 32$) dividono $H = 1024$, e nello schema dinamico
+la divisibilità è comunque irrilevante perché le righe sono consegnate una alla
+volta. Il ramo che assegna una riga in più ai primi \texttt{rem} rank non è
+dunque mai esercitato; coprirlo richiederebbe un punto a $p$ non divisore. Le sei baseline seriali a $1024^2$ e $N_{\max}=1000$ registrate nel
 dataset, una per ciascun job, valgono fra $0{,}71990$ e $0{,}72563$~s e
 concordano entro lo $0{,}8\%$: è una verifica indipendente della riproducibilità
 del nodo. La dispersione fra ripetizioni, misurata come scarto della mediana dal

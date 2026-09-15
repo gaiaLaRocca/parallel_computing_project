@@ -26,12 +26,34 @@ dagli altri pixel.
 \end{enumerate}
 
 Resta fuori dal task la sola frazione seriale: l'allocazione della matrice,
-l'inizializzazione e la gestione delle strutture dati. Il suo costo è stimato in
-circa un decimo di millisecondo su $722$~ms (sezione~\ref{sec:serial-time}),
-cioè $1 - P \approx 10^{-4}$: a $p = 32$ la legge di Amdahl limita lo speedup a
-circa $31{,}9$, al di sopra di ogni valore misurato. Le perdite di efficienza
-osservate nelle sezioni seguenti vanno dunque cercate altrove, nella
-distribuzione del lavoro.
+l'inizializzazione e la gestione delle strutture dati. Il suo costo non è stato
+cronometrato separatamente, e la stima va presa per quello che è. L'azzeramento
+dei $4$~MiB della matrice non è un semplice riempimento di memoria: al primo
+contatto richiede circa mille page fault, e su una macchina locale la stessa
+chiamata \texttt{resize} costa $1{,}3$~ms finché l'allocatore ottiene pagine
+nuove dal kernel e $0{,}13$~ms una volta che le ricicla. A seconda di quale
+ripetizione fornisca il minimo, dunque, $1-P$ cade fra $2\cdot10^{-4}$ e
+$2\cdot10^{-3}$, e con esso il limite di Amdahl a $p=32$ fra $31{,}7$ e
+$30{,}3$: nel caso peggiore \emph{sotto} il miglior valore misurato dell'intera
+campagna CPU ($31{,}10$). Su questa stima, da sola, non si può quindi fondare
+l'affermazione che Amdahl stia al di sopra di ogni misura.
+
+Sono le misure parallele a restringere l'intervallo, e verso il basso. A $p=32$
+il master--worker MPI perde il $2{,}8\%$ dal proprio limite ideale, e $2{,}54$
+punti di quel deficit sono comunicazione misurata
+(sezione~\ref{sec:mpi-risultati}): il residuo disponibile per una frazione
+seriale vale poche centinaia di microsecondi, coerente con l'estremo basso
+dell'intervallo, $1-P \approx 2\cdot10^{-4}$. Più in generale è la metrica di
+Karp--Flatt a fornire un limite superiore sperimentale a qualunque frazione
+seriale genuina, poiché le assorbe tutte: $e(32) = 0{,}0009$ per il
+master--worker MPI e $0{,}0011$ per \texttt{dynamic,1} di OpenMP, cioè meno di
+un millesimo. Le perdite di efficienza osservate nelle sezioni seguenti vanno
+dunque cercate altrove, nella distribuzione del lavoro e nel costo del
+coordinamento --- con una sola eccezione, la decomposizione ciclica MPI, il cui
+riordino seriale su rank $0$ è l'unico codice della campagna che Karp--Flatt
+misuri come frazione seriale vera (sezione~\ref{sec:mpi-risultati}). Il
+cronometraggio diretto dell'allocazione, che chiuderebbe la questione, resta fra
+gli sviluppi del lavoro.
 
 Quanto alla decomposizione, i due paradigmi CPU non distribuiscono singoli pixel
 ma righe intere, per le ragioni discusse nella sezione~\ref{sec:openmp}; la GPU,
@@ -145,8 +167,9 @@ realizzano: venticinque punti di misura contro quindici valori predetti; la
 figura~\ref{fig:cpu-predicted-measured} ne offre la lettura visiva. Alla
 stessa lettura appartiene un caso che la tabella non contempla: uno scheduling
 dinamico a chunk fissi di $c$ righe eredita il limite della decomposizione a
-blocchi con $H/c$ blocchi, come mostra \texttt{dynamic,64} nella
-sezione~\ref{sec:openmp-risultati}.
+blocchi con $H/c$ blocchi, come mostrano \texttt{dynamic,64} e
+\texttt{dynamic,16} nella sezione~\ref{sec:openmp-risultati}, il primo con $16$
+chunk e il secondo con $64$.
 \vspace{2,5mm}
 \begin{table}[htbp]
     \centering
@@ -233,22 +256,26 @@ modello compute-only~\eqref{eq:makespan} per costruzione non contiene.
 
 Il primo è la regola dinamica ai valori più alti di $p$: a $p=32$ entrambi i
 meccanismi si fermano attorno al $97\%$ del limite ($-3{,}2\%$ OpenMP, $-2{,}8\%$
-MPI). Il modello del makespan tratta il lavoro come frazionabile a piacere,
-mentre l'unità indivisibile è la riga: l'ultima riga assegnata a un worker può
-essere la più pesante, e questo \emph{effetto coda} riduce il limite di al più
-$(\lambda_{\text{riga}} - 1)\,p/H$, cioè il $2{,}8\%$ a $p=16$ e il $5{,}5\%$ a
-$p=32$. Tutte le misure dinamiche restano dentro questo margine. Per OpenMP vi
-contribuisce anche la contesa sulla coda condivisa
-(sezione~\ref{sec:openmp-risultati}), e i dati non permettono di separare i due
-termini.
+MPI). Il modello del makespan considera il solo calcolo, e il termine che gli
+manca qui è il coordinamento. Per MPI è misurato: il deficit segue la
+\texttt{comm\_fraction} punto per punto, $2{,}8\%$ contro $2{,}54\%$ a $p=32$ e
+$2{,}6\%$ contro $2{,}21\%$ a $p=16$ (sezione~\ref{sec:mpi-risultati}). Per
+OpenMP la grandezza corrispondente --- la contesa sul contatore condiviso della
+coda --- non è strumentata, ma compare nello stesso punto e con lo stesso ordine
+di grandezza (sezione~\ref{sec:openmp-risultati}). Non è invece la granularità
+della riga: poiché le righe sono consegnate in ordine $0 \ldots H-1$, la coda si
+svuota sulle righe di bordo, le più leggere della griglia, e l'\emph{effetto
+coda} che il modello trascura vale --- simulato sul profilo misurato --- lo
+$0{,}013\%$ a $p=32$, due ordini di grandezza meno del deficit osservato.
 
-Il secondo è \texttt{cyclic} a $p=16$ e $p=32$ ($-8{,}5\%$ e $-5{,}8\%$), l'unico
-caso in cui lo scarto è grande e non ha spiegazione dentro il modello: come
-discusso nella sezione~\ref{sec:mpi-risultati}, la causa candidata è il riordino
-seriale di de-interlacciamento su rank $0$, un costo di implementazione
-indipendente da $p$ e quindi invisibile a una previsione fondata sul solo
-profilo di carico, che però non spiega da solo lo scarto a $p=16$. Quel punto è
-anche il più rumoroso della campagna e va rimisurato.
+Il secondo è \texttt{cyclic} a $p=16$ e $p=32$ ($-8{,}5\%$ e $-5{,}8\%$), e qui
+al modello manca più di un termine. Il cyclic paga, su rank $0$ e in modo
+indipendente da $p$, un riordino seriale di de-interlacciamento e un secondo
+buffer da $4$~MiB: costi di implementazione invisibili a una previsione fondata
+sul solo profilo di carico, che la sua $e(p)$ costante attorno a $0{,}002$
+quantifica in circa $1{,}4$~ms (sezione~\ref{sec:mpi-risultati}). A $p=16$ vi si
+aggiunge una gather anomala, $1{,}66$~ms contro i $0{,}36$~ms del block; quel
+punto è anche il più rumoroso della campagna e va rimisurato.
 
 Il terzo è \texttt{block} MPI a $p=32$ ($-2{,}7\%$, contro il $-0{,}2\%$ della
 realizzazione OpenMP della stessa regola). La gather ne spiega poco meno della

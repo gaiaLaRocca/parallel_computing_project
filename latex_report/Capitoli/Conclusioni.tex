@@ -40,7 +40,10 @@ proprio limite entro lo $0{,}6\%$: la perdita del $62\%$ di efficienza a $32$
 thread è dovuta quasi per intero alla contiguità delle righe costose, che
 finiscono nello stesso blocco. Cambiando soltanto la regola, senza aggiungere
 comunicazione, la decomposizione ciclica resta entro l'$1\%$ dall'ideale fino a
-$8$ processi; a $16$ e $32$ se ne allontana, per una causa ancora da verificare.
+$8$ processi; a $16$ e $32$ se ne allontana, per costi seriali su rank $0$ ---
+il riordino di de-interlacciamento e un secondo buffer da $4$~MiB --- che la sua
+$e(p)$ costante quantifica in circa $1{,}4$~ms, e a $p=16$ per una gather anomala
+($1{,}66$~ms contro i $0{,}36$~ms del block).
 Le regole dinamiche a grana fine arrivano a $S = 30{,}99$ (OpenMP
 \texttt{dynamic,1}) e $S = 31{,}10$ (MPI master--worker) su $32$ unità. Nello
 sweep MPI il rapporto fra lo speedup peggiore (block) e il migliore
@@ -105,13 +108,21 @@ che il tempo è poco sensibile ai cicli dei warp.
 
 \paragraph{Amdahl e Karp--Flatt.}
 La legge di Amdahl, con una frazione seriale trascurabile, prevede uno speedup
-quasi ideale e da sola non spiega le perdite osservate. La metrica di
-Karp--Flatt le segnala correttamente, ma non misura una frazione seriale: per la
-regola a blocchi $e(p)$ decresce con $p$ e segue la forma
+quasi ideale e da sola non spiega le perdite osservate; il valore di $1-P$ resta
+peraltro stimato e non misurato, e sono i tempi paralleli a vincolarlo
+dall'alto (sezione~\ref{sec:parallelizzazione}). La metrica di Karp--Flatt
+segnala correttamente le perdite, ma quasi mai misura una frazione seriale: per
+la regola a blocchi $e(p)$ decresce con $p$ e segue la forma
 $(\lambda_p-1)/(p-1)$, cioè lo sbilanciamento riscritto in un'altra variabile. È
 diagnostico il suo andamento, più che il suo valore: una $e(p)$ decrescente
-indica uno sbilanciamento il cui limite cresce con $p$, una crescente un limite
-fisso, come la granularità o la contesa sulla coda.
+indica uno sbilanciamento il cui limite cresce con $p$; una crescente o un
+overhead che peggiora con il parallelismo, come la contesa sulla coda di
+\texttt{dynamic,1}, oppure un tetto fisso di granularità, come in
+\texttt{dynamic,16} e \texttt{dynamic,64} --- a distinguerli è se la curva
+converga a $1/S_{\max}$ o resti ordini di grandezza al di sotto. L'unica
+eccezione, e l'unico caso della campagna in cui la metrica misura davvero codice
+seriale, è la decomposizione ciclica MPI, la cui $e(p)$ resta costante attorno a
+$0{,}002$.
 
 \paragraph{Andamenti più che valori assoluti.}
 L'introduzione aveva anticipato che i valori assoluti, legati alle risorse
@@ -129,7 +140,9 @@ Alcuni risultati non erano previsti, e sono fra i più istruttivi.
     \texttt{dynamic,64} si ferma a $S = 6{,}17$ già da $8$ thread: con soli $16$
     chunk il tempo non può scendere sotto quello del chunk più pesante, e lo
     scheduling dinamico eredita il limite di una decomposizione statica a $16$
-    blocchi.
+    blocchi. La stessa regola, applicata ai $64$ chunk di \texttt{dynamic,16},
+    predice $S_{\max} = 23{,}64$ contro i $23{,}21$ misurati: il tetto di
+    granularità, e non il costo della coda, spiega anche quella politica.
     \item \textbf{Una politica adattiva può lavorare contro il problema.}
     \texttt{guided} perde circa il $31\%$ di efficienza a ogni grado di
     parallelismo, perché assegna blocchi contigui grandi proprio all'inizio,
@@ -172,7 +185,9 @@ Restano come sviluppi naturali il Buddhabrot, proposto nell'introduzione per
 osservare il regime dominato dalla contesa sulla memoria condivisa, e non
 affrontato; le versioni ibride, che combinano MPI con OpenMP o con CUDA; un
 esperimento in singola precisione, per quantificare il compromesso fra
-precisione e throughput; la misura diretta del costo di riordino nella
+precisione e throughput; il cronometraggio separato dell'allocazione della
+matrice, che fisserebbe per misura la frazione seriale $1-P$ oggi solo stimata;
+la misura diretta del costo di riordino nella
 decomposizione ciclica MPI, insieme alla rimisura del punto a $p=16$; l'accesso
 ai performance counter, per indagare le due questioni aperte dello Sweep~A; e
 un'esecuzione su più nodi, che darebbe alla frazione di comunicazione il suo
