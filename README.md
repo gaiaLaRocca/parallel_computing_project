@@ -1,409 +1,236 @@
 # Parallel Computing Project — Mandelbrot Set
 
-Comparative study on the **parallelization of a fractal computation** (the
-Mandelbrot set) across the main parallel programming paradigms, run and measured
-on an HPC cluster.
+Serial, OpenMP, MPI and CUDA implementations of the Mandelbrot escape-time
+computation, together with the SLURM sweeps, the analysis scripts and the
+report that compare them.
 
-The goal is not merely to "run Mandelbrot in parallel", but to understand **how**
-the same computation behaves under different execution models (shared memory,
-distributed memory, GPU), **how well** it scales, and **at what cost**
-(communication, load imbalance, launch overhead), quantified with standard,
-reproducible metrics.
-
-> A detailed academic report (in Italian) accompanies this repository and is the
-> primary reference for the analysis, derivations and results. See
-> [`report.pdf`](report.pdf) *(added when available)*. This README summarises the
-> idea and scope of the code; the report covers the theory and discussion in
-> full. **The metric definitions below are the exact ones used in the report**
-> (same symbols, same formulas) so that code and report never diverge.
-
-> **Status (pre-cluster-run).** All four paradigms — serial, OpenMP, MPI and
-> CUDA — are implemented, sharing one driver, metrics layer and per-job CSV. The
-> compute kernel is the only file rewritten per paradigm, which is what makes
-> the cross-variant checksum comparison meaningful. The CPU variants reproduce
-> the serial checksum bit-for-bit locally; the CUDA kernel's checksum parity is
-> the first thing validated on the cluster, since it needs a GPU. What remains
-> is the measurement campaign: submit the sweeps, merge the per-job CSVs,
-> generate the plots.
+The full analysis, in Italian, is in [`latex_report/`](latex_report/), which
+contains the LaTeX sources and the compiled PDF (`report.pdf`). This README is
+self-contained: it describes what the project studies, how the experiments are
+designed and how to reproduce them. It does not report timings, since those
+depend on the hardware the sweeps run on.
 
 ---
 
-## Why the Mandelbrot set
+## Scope
 
-Mandelbrot is a deceptively simple case study for parallel computing: trivial to
-parallelize at the data level, yet non-trivial to parallelize *well*.
+Each pixel of the Mandelbrot set can be computed independently of all others,
+so the problem is embarrassingly parallel. Its cost, however, is far from
+uniform: the escape time `n(i, j)` of a pixel, the number of iterations of
+`z ← z² + c` before `|z| > 2`, ranges from a few iterations for points far from
+the set up to the cap `max_iter` for interior points. Expensive pixels
+concentrate in the rows that cross the main cardioid and the period-2 bulb.
 
-- **Embarrassingly parallel at the pixel level.** Each point of the complex
-  plane is computed independently, with no data dependencies between pixels.
-  Domain decomposition is therefore straightforward.
-- **Strongly load-imbalanced.** Points *inside* the set iterate up to
-  `max_iter`, while points *outside* escape after a few iterations. The per-pixel
-  cost is a highly irregular (fractal) function of position, not a constant. This
-  is what makes the problem interesting: it is an excellent testbed for
-  *load-balancing* strategies, which are the central concern of the project.
-- **Architecturally revealing.** The same imbalance manifests differently per
-  paradigm: as idle workers under static CPU scheduling, and as **warp
-  divergence** on the GPU, where threads in a warp that finish early must wait
-  for the slowest.
-- **Verifiable output.** The result is a matrix of iteration counts. Correctness
-  across implementations is validated by comparing a checksum of that matrix
-  (see *Correctness* below).
+The project studies how this single irregularity affects each paradigm:
 
-The single root cause — the per-pixel variability of the escape time — is the
-thread that runs through the whole project: one algorithmic irregularity that
-surfaces as **load imbalance** on CPUs and **warp divergence** on GPUs.
+- **On CPUs (OpenMP, MPI)** it becomes *load imbalance*: the work is split into
+  rows, and the parallel time is set by the most loaded thread or process. The
+  question is how much each assignment rule — contiguous blocks, cyclic
+  interleaving, dynamic queues — loses to it.
+- **On the GPU (CUDA)** it becomes *warp divergence*: threads run in groups of 32
+  (warps) that finish only when their slowest thread does. The question is
+  whether the thread→pixel mapping, set by the block shape, changes the time.
 
----
+A second goal is methodological: to check how far the parallel behaviour can be
+**predicted from one serial run**. The serial baseline records the escape-time
+matrix and the per-row work `w_r = Σ_j n(r, j)`. From these, before any parallel
+code runs, the analysis scripts compute:
 
-## Initial hypotheses (from parallelization theory)
+- for each CPU assignment rule, the effective imbalance
+  `λ_p = max_k W_k / (W/p)` (where `W_k` is the work assigned to unit `k`) and
+  the resulting speedup bound `S(p) ≤ p / λ_p`;
+- for each CUDA block shape, the warp statistics: mean within-warp variance,
+  masked (wasted) iterations and total lane-cycles.
 
-These are the expectations the experiments are designed to test.
+The measured sweeps are then compared against these predictions.
 
-- **Serial baseline.** Because every iteration performs a fixed number of
-  floating-point operations, the total work — and hence the serial time — is
-  proportional to the sum of the iteration counts over all pixels. The per-pixel
-  cost varies, but in the serial case the execution order is irrelevant.
+## Methodology
 
-- **OpenMP (shared memory).** A `parallel for` over the pixel grid should scale
-  well *up to the cores of a single node*, bounded by **Amdahl's law** (the small
-  serial fraction: setup, allocation). The key experiment is **scheduling**:
-  with a load this irregular, `static` block scheduling is expected to leave
-  workers idle, while `dynamic`/`guided` should recover most of the imbalance at
-  the price of some scheduling overhead.
+- **One kernel per paradigm, everything else shared.** Driver, timing, I/O and
+  metrics are the same code for all variants, so the only difference between
+  two runs is the compute kernel.
+- **Bit-identical results.** Every variant writes a 64-bit FNV-1a checksum of the
+  escape-time matrix, which must match the serial one. Floating-point
+  contraction is disabled (`-ffp-contract=off`, `--fmad=false` for `nvcc`) and
+  `-ffast-math` is never used, since a fused multiply-add can change an escape
+  count by ±1 near the boundary.
+- **Bare kernel.** The benchmarks disable the two available optimisations
+  (cardioid/bulb test and axial symmetry). Both would remove work unevenly and
+  hide the imbalance under study.
+- **Timing.** The timed region covers allocation and computation, excluding
+  I/O. Each point is repeated and the minimum is reported, with median and mean
+  as noise indicators.
+- **Work and throughput.** Total work is `W = Σ n(i, j)`. Each iteration costs
+  8 floating-point operations (FLOPs), so throughput is `8 W / T` FLOPs per
+  second, an absolute metric comparable across CPU and GPU.
+- **Speedup against the job's own baseline.** Every sweep measures its serial
+  time `T(1)` inside the same job as its parallel points. The merge pairs each
+  point with that baseline and computes speedup `S = T(1)/T(p)`, efficiency
+  `S/p` and the Karp–Flatt serial fraction. For CUDA, `S` compares one GPU with
+  one CPU core.
+- **One result file per job.** Jobs never append to a shared CSV, since
+  concurrent appends can corrupt it on a network filesystem. Each job writes
+  `run_<jobid>.csv`, and a Python script merges them into one dataset.
 
-- **MPI (distributed memory).** Processes do not share memory and communicate by
-  explicit messages, potentially *across nodes*. Two consequences are expected:
-  (1) static decompositions (block, cyclic) pay **no** per-step communication but
-  inherit the imbalance; (2) a **dynamic master–worker** scheme rebalances the
-  load at the cost of request/response messages. Since computing a chunk vastly
-  outweighs the cost of requesting one, the dynamic scheme is expected to win —
-  this is the project's central comparison. Genuine inter-node communication cost
-  only appears on a real cluster, not when all ranks share one machine's RAM.
+## Experiments
 
-- **CUDA (GPU).** Thousands of lightweight threads map one-to-one to pixels. The
-  bottleneck is expected to shift from load balancing to **warp divergence** and
-  to **host↔device transfer** of the result. Occupancy and block/grid geometry
-  become the tuning levers.
+Each sweep is a SLURM script in `mandelbrot/job_sbatch/`. All CPU sweeps use a
+`1024×1024` grid of the region `[-2, 0.5] × [-1.25, 1.25]` with
+`max_iter = 1000`, unless noted otherwise.
 
-### Revised by measurement — the Level 1 sweep
-
-The serial cross-sweep (`mandel_serial.sh`, 2 resolutions × 3 `max_iter`, bare
-kernel on one core of `gnode01`) settles the imbalance question before any
-parallel run, and it corrects the expectation stated above:
-
-| `max_iter` | CoV @512² | CoV @1024² | `λ_row` @512² | `λ_row` @1024² |
-| ---------- | --------- | ---------- | ------------- | -------------- |
-| 500        | 0.9486    | 0.9485     | 2.7216        | 2.7236         |
-| 1000       | 0.9679    | 0.9680     | 2.7646        | 2.7638         |
-| 5000       | 0.9850    | 0.9854     | 2.8061        | 2.8031         |
-
-- **Resolution has essentially no effect** — the metrics agree to the fourth
-  decimal across a 4× change in pixel count, as the scale-invariance argument
-  predicted. `W` scales exactly 4×, so resolution buys work, not imbalance.
-- **`max_iter` has a real but *weak, saturating* effect**, not the strong one
-  anticipated: a **10×** increase moves CoV by +3.8 % and `λ_row` by +3.1 %, in
-  decreasing increments. The mechanism is visible in the profile: the cheapest
-  row is independent of the cap (rows fully outside the set escape in a few
-  iterations regardless), while both the mean and the maximum are dominated by
-  interior pixels and grow with it — and a ratio between two quantities that
-  grow together tends to a constant.
-
-The honest conclusion is stronger than the original hypothesis: **the imbalance
-is intrinsic to the geometry of the set**, nearly invariant in both knobs. It is
-a property to be engineered around, not a parameter to be dialled up.
-
-Note also that `λ_row ≈ 2.8` is *small*: the row-granularity ceiling is
-`H/λ_row ≈ 188` for a 512-row grid, far above the 64 cores available. Row
-granularity is therefore never the binding constraint here — what binds is
-**how rows are grouped**, which is exactly what `analysis/block_imbalance.py`
-predicts (§ *Level 1*).
-
----
-
-## Paradigms under study
-
-| Model | Memory | Scope | Role |
+| Script | What varies | Fixed | Repeats |
 |---|---|---|---|
-| **Serial** (baseline) | — | 1 core | Reference `T(1)` for speedup/efficiency |
-| **OpenMP** | Shared | Intra-node threads | Parallelism over the cores of one node |
-| **MPI** (OpenMPI) | Distributed | Inter-node processes | Scaling across multiple cluster nodes |
-| **CUDA** | Device (GPU) | Thousands of GPU threads | Offloading the iteration kernel |
-| **Hybrid** *(optional)* | Mixed | MPI+OpenMP / MPI+CUDA | Multiple nodes *and* cores/GPUs per node, time permitting |
+| `mandel_serial.sh` | resolution `512², 1024²` × `max_iter` `500, 1000, 5000` | 1 core | 3 |
+| `mandel_omp.sh` | schedule `static`, `dynamic,1`, `dynamic,16`, `dynamic,64`, `guided` × threads `2, 4, 8, 16, 32` | threads pinned to cores | 5 |
+| `mandel_mpi.sh` | `block`, `cyclic` × processes `2, 4, 8, 16, 32`; master–worker × workers `2, 4, 8, 16, 32` (plus one master) | one core per rank | 5 |
+| `mandel_cuda_blocks.sh` | block shape `256x1, 512x1, 128x1, 128x2, 64x4, 32x8, 16x16, 8x32, 1x256` | one GPU | 30 |
+| `mandel_cuda_scaling.sh` | resolution `512²…4096²` at `max_iter = 1000`; `max_iter` `500, 1000, 5000` at `2048²` | one GPU, block `256x1` | 30 (GPU), 3 (serial) |
 
-### Domain decomposition strategies
+What each sweep is designed to show:
 
-Because the load is imbalanced, the partitioning strategy matters more than the
-implementation details. The following are compared:
+- **Serial.** Whether resolution and `max_iter` change the shape of the load, or
+  only its amount: the imbalance indices `λ = max_r w_r / mean(w_r)` and
+  `CoV = std(w_r) / mean(w_r)` are recorded, together with the full row profile
+  of every run.
+- **OpenMP.** How scheduling policy and chunk size trade load balance against
+  coordination cost. `static` splits the rows into contiguous blocks,
+  `dynamic,c` hands out chunks of `c` rows from a shared queue, and `guided`
+  starts with large chunks and shrinks them.
+- **MPI.** The same trade-off with explicit messages. `block` sends contiguous
+  rows to each rank; `cyclic` interleaves them (row `r` to rank `r mod p`), with
+  the same single gather; the master–worker scheme hands out one row at a time
+  on request. The share of time spent in MPI calls is recorded as
+  `comm_fraction`.
+- **CUDA, block shapes.** Whether the block shape matters. A block width that is
+  a multiple of 32 keeps every warp on a single row, so its writes to the
+  row-major matrix are contiguous (coalesced). Narrower blocks fold rows into
+  one warp, and compact tiles group pixels that are close in both directions.
+  Each run records warp divergence (from the matrix), occupancy and
+  device→host transfer time.
+- **CUDA, problem size.** How GPU utilisation grows with the number of pixels,
+  and how the fixed cost of copying the result back weighs as the work per pixel
+  grows. The job also logs which CPU socket the process and the GPU sit on,
+  because a copy that crosses sockets can be slower and the transfer time must
+  be read against the placement the job actually received.
 
-- **Block (static):** contiguous rows per worker. Simple, but prone to strong
-  imbalance — whoever gets the interior region does far more work.
-- **Cyclic / striped (static):** interleaved rows across workers. Balances the
-  load much better at zero communication cost.
-- **Dynamic / master–worker (MPI):** the master hands out work chunks on demand.
-  Near-ideal balancing, but introduces communication overhead. This is the
-  central comparison of the project.
-
-On the **GPU** the analogue of the decomposition choice is the *thread↔pixel
-mapping* — the block geometry — and the conclusion inverts. A warp runs in
-lockstep and writes global memory fastest when its lanes touch contiguous
-addresses, so mapping **adjacent** pixels to a warp (horizontal, warp-aligned
-blocks) both minimizes divergence and coalesces the writes; the *cyclic*
-interleaving that balances CPU workers is instead the worst case here. Same
-irregularity, mirrored. The CUDA block-shape sweep (`MANDEL_BLOCK`) probes
-exactly this trade-off.
-
----
-
-## Metrics
-
-Metrics are organized in **three levels**, mirroring the report. Keeping them
-separate is what makes the three paradigms directly comparable.
-
-- **Level 1 — Serial baseline metrics** (report §3.3): computed once, from the
-  serial run. Deterministic (input-only, architecture-independent) except for
-  the timing.
-- **Level 2 — Common parallel metrics** (report §4.2): defined on times only,
-  therefore identical across OpenMP, MPI and CUDA.
-- **Level 3 — Paradigm-specific metrics** (report §4.3–4.5): measure the
-  mechanism of each model; they have no meaning outside it.
-
-### Level 1 — Serial baseline metrics
-
-The reference artifact is the **escape-time matrix** `n(r, c)` — the iteration
-count of each pixel — *not* the rendered image. All work metrics derive from it.
-
-- **Wall-clock time** `T(1)`: compute part only (allocation of the matrix
-  included, I/O excluded), monotonic clock, minimum over repetitions as the
-  least-noise-contaminated estimator; median and mean also reported.
-- **Total work** `W = Σ_r Σ_c n(r, c)` — the sum of iteration counts over all
-  pixels. This is the exact computational-cost map.
-- **FLOP model**: each iteration performs `φ = 8` FLOP (4 multiplications + 4
-  additions/subtractions, counting the doubling `2·z_re` as a multiplication).
-  Total FLOP `F = φ · W`; throughput `Π = F / (T(1) · 1e9)` in GFLOP/s.
-  FLOP counting is **analytical** (derived from `n(r, c)` after the run), not
-  instrumented at runtime.
-- **Per-row work** `w_r = Σ_c n(r, c)` — the work metric is the **iteration
-  count per row, not the per-row time** (per-row timing would inject systematic
-  overhead noise). Mean `w̄ = W / H`, standard deviation `σ_w`.
-- **Imbalance indices** (both dimensionless, computed from `{w_r}`):
-  - `CoV = σ_w / w̄` — overall dispersion of the load; signals whether **dynamic
-    scheduling** is worthwhile. `CoV = 0` is perfectly uniform.
-  - `λ = max_r w_r / w̄` — peak-to-mean ratio at **row** granularity.
-
-  **Granularity matters** (report §3.3.3). The row-level `λ` gives the
-  *intrinsic* bound `S ≤ H / λ` (the heaviest row is indivisible). The bound
-  `S ≤ P / λ_P` for a static **contiguous block** decomposition uses instead the
-  *block-level* `λ_P = max_p W_p / W̄`, where `W_p` is the summed work of the
-  block assigned to processor `p` and `W̄ = W / P`. Since aggregating rows
-  averages out peaks, `λ_P ≤ λ`, with equality only when `P = H`. When computing
-  a predicted bound, be explicit about which `λ` is used.
-
-- **Predicted decomposition bounds.** `λ_P` is derived offline from the
-  `--row-stats` dump by `analysis/block_imbalance.py`, which covers the `block`,
-  `cyclic` and `dynamic` schemes under one definition — see its docstring.
-
-> **Baseline invariant.** The scaling reference is the *bare* kernel:
-> `USE_PRUNING` and `USE_SYMMETRY` are **disabled** so that `n(r, c)` reflects
-> the real iteration work. With pruning on, interior points store `max_iter`
-> without iterating and `W` overstates the actual work — fine for a speed demo,
-> but it masks the load balance and must never back the scaling numbers.
-
-### Level 2 — Common parallel metrics (times only)
-
-- **Speedup** `S(p) = T(1) / T(p)`; **efficiency** `E(p) = S(p) / p`. `T(1)` and
-  `T(p)` must time the *same* code region (allocation included).
-- **Amdahl (strong scaling):** fixed problem size; `S(p) ≤ 1 / ((1−P) + P/p)`.
-  Here the serial fraction `1−P` is tiny (allocation and compute both scale
-  `O(W·H)`), so Amdahl gives a near-ideal *reference ceiling* but does not
-  explain the shortfalls.
-- **Karp–Flatt** experimental serial fraction
-  `e(p) = (1/S(p) − 1/p) / (1 − 1/p)`. It absorbs *all* non-ideal effects
-  (imbalance, synchronization, communication) into one number. Its **trend** is
-  the diagnostic: constant `e(p)` ⇒ genuine serial fraction; **rising** `e(p)`
-  ⇒ overhead growing with `p` (load imbalance / communication). Given the
-  negligible nominal serial fraction, a rising `e(p)` is the quantitative
-  signature of the project's thesis.
-- **Weak scaling (Gustafson):** problem size grown with `p`. **Caveat:** on
-  Mandelbrot the work does *not* grow linearly with the pixel count — it depends
-  on how many new pixels fall in the interior — so weak-scaling curves are read
-  with this in mind, not as textbook Gustafson.
-- **Predicted vs measured:** `λ`/`CoV` (Level 1, deterministic) predict the
-  imbalance *before* any parallel code exists; `e(p)` measures its consequence
-  *after*. Comparing the two is the analytical spine of the parallel sections.
-
-### Level 3 — Paradigm-specific metrics (minimum required)
-
-The following are the **minimum** each paradigm must report; add more where they
-sharpen the analysis.
-
-- **OpenMP** — for each `schedule` (`static`, `dynamic`, `guided`) and chunk
-  size: `S(p)`, `E(p)`, `e(p)`; the scheduling that best recovers the imbalance
-  predicted by `CoV`. *(Optional: per-thread work spread, chunk-size sweep.)*
-- **MPI** — communication time vs compute time (fraction of `T(p)` spent in
-  `scatter`/`gather`/messages); block vs cyclic vs dynamic master–worker;
-  behaviour across ≥2 nodes. *(Optional: message counts, master contention.)*
-- **CUDA** — effective throughput (GFLOP/s) vs theoretical peak; **warp
-  divergence** as a *deterministic proxy from the escape-time matrix* (no
-  profiler required, with block-aware and cyclic-worst-case variants); occupancy
-  (runtime API); host↔device transfer time (CUDA events). The block/grid
-  geometry is swept at runtime via `MANDEL_BLOCK`; the canonical kernel is
-  double-precision for checksum parity with the CPU baseline. *(Optional: an
-  FP32 throughput variant, shared-memory variants.)*
-
-> **CUDA speedup denominator.** `S = T(1) / T_gpu` compares a single GPU against
-> a single CPU core; state this explicitly and log the CPU baseline used. It is
-> not "speedup over `p` cores" as in OpenMP/MPI — this is the classic way GPU
-> Mandelbrot numbers get inflated.
-
-> **Cross-hardware caveat.** If MPI is benchmarked on the multi-node cluster
-> while OpenMP runs on a single node, their `T(1)` may come from different CPUs;
-> absolute speedups are then not directly comparable. Per the report, trends —
-> not absolute values — are what count.
-
-### Result dataset — one file per job, merged offline
-
-**Why not a single shared CSV.** Every paradigm is benchmarked on the *same
-cluster* precisely so the comparison rests on one underlying architecture and the
-numbers are as free of noise and confounds as possible. That same setting makes a
-shared, append-to CSV unsafe: many `sbatch` jobs (OpenMP, MPI, CUDA) can finish
-simultaneously, and concurrent appends interleave or corrupt rows — atomic append
-is not guaranteed on the cluster's network filesystem (NFS/Lustre). A corrupted
-dataset is itself a confound. So instead:
-
-- **Each job writes its own file** `mandelbrot/data/run_${SLURM_JOB_ID}.csv`
-  (header + its single result row, never appended to). This is lock-free by
-  construction — no `flock`, no interleaving.
-- **Binaries write only intra-run measurements** — everything computable from one
-  execution: `T_*`, `W`, `lambda_row`, `lambda_block`, `cov`, `gflops`, the
-  paradigm-specific fields, `checksum`. Per-job files may be partial: a serial run
-  omits the CUDA/MPI columns, and that is fine.
-- **The relational metrics are computed offline, in Python.** `speedup`,
-  `efficiency` and `karp_flatt_e` need `T(1)` *and* `T(p)`; a single binary only
-  ever sees its own `T(p)`. They are left empty by the binaries.
-- **One Python merge stage** concatenates every `data/run_*.csv` (resolving the
-  concurrency by construction), then computes the relational metrics on the union
-  — matching each parallel run to its `T(1)` baseline measured on the *same
-  hardware* (same resolution, `max_iter`), which is what keeps `S(p)` a clean
-  comparison rather than a cross-machine artefact.
-
-The **canonical schema below is the output of that merge** (missing columns filled
-empty → a sparse table), so the plotting script stays paradigm-agnostic:
-
-```
-paradigm,schedule,p,nodes,resolution,max_iter,pruning,symmetry,
-T_min,T_median,T_mean,W,lambda_row,lambda_block,cov,
-speedup,efficiency,karp_flatt_e,comm_fraction,gflops,
-occupancy,warp_divergence,transfer_time,checksum
-```
-
-- `paradigm` ∈ {serial, openmp, mpi, cuda, hybrid}; `schedule` ∈
-  {"-", static, dynamic, guided, block, cyclic, master_worker}.
-- `p` = threads / ranks / "1" for serial (CUDA: use "1" and record geometry
-  separately or in `schedule`).
-- `resolution` as `WxH` (e.g. `1024x1024`); `pruning`/`symmetry` ∈ {0, 1}.
-- Fields not applicable to a paradigm are left empty (e.g. `comm_fraction` for
-  serial/OpenMP; `occupancy`/`warp_divergence`/`transfer_time` for non-CUDA;
-  `lambda_block` when `p < 2`; the relational columns until the merge fills them).
-- `checksum` = FNV-1a of the escape-time matrix; identical inputs must yield an
-  identical checksum.
-
----
-
-## Test plan
-
-**Experimental variables**
-
-- **Resolution:** e.g. 512², 1024², 2048², 4096².
-- **`max_iter`:** e.g. 100, 1000, 5000. Raising it increases the imbalance, but
-  only weakly and with saturation — see the measured Level 1 result below.
-- **Degree of parallelism:** number of OpenMP threads; number of MPI ranks and
-  their distribution across nodes; CUDA block/grid geometry.
-
-**Correctness**
-
-For each configuration, the output is compared against the serial baseline via a
-checksum of the iteration matrix. Two correct implementations produce an
-identical result **provided floating-point contraction is disabled** (compiler
-flags `-ffp-contract=off`, and `--fmad=false` for CUDA): without this, fused
-multiply-add can flip the iteration count by ±1 on pixels near the escape
-boundary. Also fixed for stability: `PALETTE_RANGE=256` (colour stability across
-`max_iter`). This reproducibility requirement is itself part of the study.
-
-**Methodology**
-
-- Each configuration is run several times, reporting the minimum (least
-  noise-contaminated estimator of compute time) alongside median and mean.
-  The `--repeat N` flag drives this.
-- Timing covers the compute part only; I/O is excluded.
-- Official measurements are non-interactive scheduler jobs with explicit
-  resource requests, for reproducibility and comparability.
-- Result datasets (CSV, schema above) are saved for generating the scaling plots.
-
----
-
-## Roadmap
-
-- **Phase 0 — Setup and baseline.** *(implemented)* Sources organized into the
-  cluster structure; correct, instrumented serial baseline (timing, image
-  output, checksum, load-imbalance profiling: `W`, `w_r`, `λ`, `CoV`).
-- **Phase 1 — Shared memory (OpenMP).** *(implemented)* Parallelize the loop over
-  pixels; compare `static` / `dynamic` / `guided` scheduling against the imbalance.
-- **Phase 2 — Distributed memory (MPI).** *(implemented)* Block and cyclic static
-  decomposition; dynamic master–worker scheme; image gather and
-  communication-overhead measurement.
-- **Phase 3 — GPU (CUDA).** *(implemented; GPU correctness gate pending the first
-  cluster run)* Iteration kernel, thread↔pixel mapping, host↔device transfer,
-  block/grid tuning and occupancy.
-- **Phase 4 — Hybrid** *(optional, not started)*. MPI+OpenMP / MPI+CUDA, time
-  permitting.
-- **Phase 5 — Analysis and report.** *(pending the cluster campaign; the merge
-  and plotting scripts are in place)* Full benchmark campaign, scaling plots,
-  discussion of results.
-
----
-
-## Repository structure
+## Repository layout
 
 ```
 parallel_computing_project/
-│
-├── .gitignore
 ├── README.md
-│
-└── mandelbrot/                  <-- First experiment (others may follow)
-    │
-    ├── src/                     <-- Sources (serial, OpenMP, MPI, CUDA) + Makefile
-    ├── job_sbatch/              <-- Scheduler scripts (.sh): one sweep per paradigm
-    ├── analysis/                <-- Python merge, imbalance prediction, plotting
-    │                                (paradigm-agnostic)
-    ├── job_logs/                <-- Scheduler output logs (git-ignored)
-    │   └── .gitkeep
-    └── data/                    <-- Per-job CSVs (run_*.csv, versioned);
-        └── .gitkeep                 images/figures git-ignored
+├── latex_report/            report: LaTeX sources and report.pdf (Italian)
+└── mandelbrot/
+    ├── src/                 C++/CUDA sources and Makefile
+    ├── job_sbatch/          SLURM scripts, one sweep each
+    ├── analysis/            Python: merge, predictions, figures
+    ├── data/                per-job results and derived tables (versioned)
+    └── job_logs/            SLURM logs (git-ignored)
 ```
 
-The root is a container for multiple experiments: `mandelbrot/` is the first, and
-other fractals or benchmarks can be added as sibling folders sharing the same
-internal structure.
+`CMakeLists.txt` at the root only serves IDE indexing of the serial sources;
+the build uses the Makefile.
 
----
+## Implementations
+
+| Variant | Source | Make target | Parallelism |
+|---|---|---|---|
+| Serial baseline | `mandelbrot.cpp` | `mandelbrot` (default) | — |
+| OpenMP | `mandelbrot_omp.cpp` | `mandelbrot_omp` | threads over rows, policy from `OMP_SCHEDULE` |
+| MPI | `mandelbrot_mpi.cpp` | `mandelbrot_mpi` | rows split by `MPI_DECOMP` = `block` (default), `cyclic` or `dynamic` (master–worker) |
+| CUDA | `mandelbrot_cuda.cu` | `mandelbrot_cuda` | one thread per pixel, block shape from `MANDEL_BLOCK=BXxBY` (default `256x1`) |
+
+## Requirements
+
+- g++ with C++17 and OpenMP
+- an MPI implementation providing `mpicxx` (tested with OpenMPI 4.1)
+- the CUDA toolkit (`nvcc`) for the GPU variant
+- Python 3 for the analysis; only `plot_metrics.py` needs `matplotlib`
+- SLURM for the job scripts
 
 ## Build
 
-Sources are plain C++ (plus OpenMP / MPI / CUDA per variant); build with the
-provided `Makefile` inside `mandelbrot/`. Toolchain and compilation must happen
-**on the cluster**, since timings are only meaningful there and must all come
-from the same machine. Compiled binaries, logs and generated data are excluded
-from version control.
+```bash
+cd mandelbrot/src
+make                    # serial baseline
+make mandelbrot_omp     # OpenMP
+make mandelbrot_mpi     # MPI
+make mandelbrot_cuda    # CUDA
+```
 
----
+The build uses `-march=native`, so compile on the machine that runs the
+benchmark. The two optimisations are off by default:
 
-## Reproducibility
+```bash
+make OPT="-DUSE_PRUNING"                  # cardioid / period-2 bulb test
+make OPT="-DUSE_PRUNING -DUSE_SYMMETRY"   # plus mirroring about the real axis
+```
 
-The report links this repository at an **immutable tag** (e.g. `v1.0-report`),
-not the mutable `main` branch, so that the code backing the reported checksums
-and timings is exactly recoverable. When citing the repo in the report, pin the
-tag or commit SHA.
+## Running
+
+```
+./mandelbrot [--resolution WxH] [--max-iter N] [--repeat N]
+             [--center-re X --center-im Y --span S]
+             [--csv FILE] [--ppm FILE] [--pgm FILE] [--raw FILE] [--row-stats FILE]
+             [--p N] [--nodes N] [--schedule NAME]
+```
+
+- `--repeat N` runs the computation N times and reports the minimum, median and
+  mean time.
+- `--csv` writes one result row: times, total work, imbalance indices,
+  throughput, checksum and the paradigm-specific fields.
+- `--ppm`, `--pgm` and `--raw` write the image or the raw escape-time matrix;
+  `--row-stats` writes the per-row work profile.
+- `--center-re`, `--center-im` and `--span` select a zoom window instead of the
+  default region.
+- `--p`, `--nodes` and `--schedule` only label the CSV row.
+
+Examples:
+
+```bash
+OMP_NUM_THREADS=8 OMP_SCHEDULE=dynamic,1 ./mandelbrot_omp --repeat 5 --p 8 --schedule dynamic_1
+mpirun -x MPI_DECOMP=cyclic -n 8 ./mandelbrot_mpi --repeat 5 --p 8 --schedule cyclic
+MANDEL_BLOCK=16x16 ./mandelbrot_cuda --repeat 30 --schedule 16x16
+```
+
+## Running the sweeps
+
+Submit from the repository root, e.g. `sbatch mandelbrot/job_sbatch/mandel_omp.sh`.
+Each script compiles inside the job, so that code is built for the CPU it runs
+on, then writes `mandelbrot/data/run_<jobid>.csv` and its log to
+`mandelbrot/job_logs/`. The `#SBATCH` account, partition and module lines refer
+to the cluster used for the report and must be adapted elsewhere. The MPI script
+requests a single node and launches ranks with `mpirun`; on one node messages
+travel through shared memory, so `comm_fraction` is a lower bound for a
+multi-node run.
+
+## Analysis
+
+Run from the repository root, after the sweeps:
+
+```bash
+python3 mandelbrot/analysis/merge_metrics.py     # run_*.csv -> merged.csv, with speedup, efficiency, Karp–Flatt
+python3 mandelbrot/analysis/block_imbalance.py   # rowprofile_*.csv -> predicted λ_p and bounds for block/cyclic/dynamic
+python3 mandelbrot/analysis/block_geometry.py    # raw matrix -> predicted warp statistics per CUDA block shape
+python3 mandelbrot/analysis/plot_metrics.py      # report figures -> mandelbrot/data/plots/
+```
+
+- `block_geometry.py` reads by default the raw matrix written by
+  `make_fractal_figures.sh`.
+- `make_fractal_figures.sh` renders the fractal figures of the report through
+  `render_fractal.py`; it needs no cluster.
+- `plot_metrics.py` draws five figures:
+  - the serial row profile;
+  - OpenMP speedup per schedule;
+  - measured CPU speedup against the predicted bound, one panel per assignment
+    rule;
+  - GPU throughput against image size;
+  - device→host copy bandwidth against copy size.
+
+`mandelbrot/data/` versions:
+- the per-job results (`run_*.csv`) and the merged dataset;
+- the serial row profiles;
+- the two prediction tables (`block_imbalance.csv`, `block_geometry.csv`);
+- short notes extracted from the CUDA job logs.
 
 ---
 

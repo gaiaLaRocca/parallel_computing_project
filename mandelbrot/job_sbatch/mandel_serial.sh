@@ -17,8 +17,8 @@
 #                 the fourth decimal. What resolution drives is total work W
 #                 (exactly 4x) and time.
 # Conclusion: the imbalance is intrinsic to the geometry of the set, to be
-# engineered around rather than dialled up. See README section "Revised by
-# measurement".
+# engineered around rather than dialled up. See the serial-baseline chapter of
+# the report (latex_report/).
 #
 # Each run also dumps its per-row work profile w_r for the "work per row" figure.
 #
